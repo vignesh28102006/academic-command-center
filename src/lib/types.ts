@@ -28,6 +28,8 @@ export interface ChangeRecord {
   newValue?: string | null;
   summary: string;
   sourceMessage?: string;
+  eventId?: string;
+  sourceMessageId?: string;
 }
 
 export interface AcademicItem {
@@ -37,19 +39,47 @@ export interface AcademicItem {
   type: AcademicType;
   status: AcademicStatus;
   deadline?: string; // ISO string representation (with local offset or timestamp)
+  deadlineTime?: string;
   eventDate?: string; // YYYY-MM-DD calendar date (prevents timezone date shifting)
   eventTime?: string; // e.g. "11:35 AM", "First hour", "2:00 PM"
   submissionUrl?: string;
   resourceUrls: string[];
   attachmentNames: string[];
   description: string;
+  requirements?: string[];
   sourceGroup?: string;
   sourceSender?: string;
   originalMessages: string[];
+  sourceKey?: string;
+  notionPageId?: string;
+  needsConfirmation?: boolean;
+  confidence?: "HIGH" | "MEDIUM" | "NEEDS_CONFIRMATION";
+  confidenceScore?: number;
+  lastSyncedAt?: string;
   createdAt: string;
   updatedAt: string;
   changeHistory: ChangeRecord[];
-  confidence?: "HIGH" | "MEDIUM" | "NEEDS_CONFIRMATION";
+}
+
+export interface RawMessageRecord {
+  id: string;
+  source: string;
+  sourceGroup?: string;
+  sourceSender?: string;
+  messageText: string;
+  messageTimestamp: string;
+  messageHash: string;
+  processedAt: string;
+  processingStatus: "PROCESSED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC" | "FAILED";
+  linkedEventId?: string;
+}
+
+export interface SubjectMappingRecord {
+  id: string;
+  courseCode: string;
+  subjectName: string;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type ParseAction = "CREATED" | "UPDATED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC";

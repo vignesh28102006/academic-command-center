@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { AcademicItem, AcademicStatus, AcademicType } from "@/lib/types";
+import { AcademicItem, AcademicStatus, AcademicType, ChangeRecord } from "@/lib/types";
 import {
   formatCalendarDate,
   formatDeadlineDisplay,
@@ -445,56 +445,105 @@ export default function Dashboard() {
     }
   }
 
-  // Toggle item complete status
-  function toggleComplete(id: string) {
+  // Load events from Supabase server on mount
+  useEffect(() => {
+    async function loadServerEvents() {
+      try {
+        const res = await fetch("/api/events");
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.events) && data.events.length > 0) {
+            setItems(data.events);
+          }
+        }
+      } catch (err) {
+        console.warn("Could not fetch events from /api/events:", err);
+      }
+    }
+    loadServerEvents();
+  }, []);
+
+  // Toggle item complete status with Supabase + Notion persistence
+  async function toggleComplete(id: string) {
+    const item = items.find(it => it.id === id);
+    if (!item) return;
+    const isComp = item.status === "COMPLETED";
+    const newStatus: AcademicStatus = isComp ? "IN_PROGRESS" : "COMPLETED";
+    const updatedTime = new Date().toISOString();
+    const changeRecord: ChangeRecord = {
+      id: crypto.randomUUID(),
+      eventId: id,
+      timestamp: updatedTime,
+      field: "status",
+      oldValue: item.status,
+      newValue: newStatus,
+      summary: isComp ? "Reopened item" : "Marked as completed"
+    };
+
     setItems(prev =>
-      prev.map(it => {
-        if (it.id !== id) return it;
-        const isComp = it.status === "COMPLETED";
-        const newStatus: AcademicStatus = isComp ? "IN_PROGRESS" : "COMPLETED";
-        const updatedTime = new Date().toISOString();
-        const changeRecord = {
-          id: crypto.randomUUID(),
-          timestamp: updatedTime,
-          field: "status",
-          oldValue: it.status,
-          newValue: newStatus,
-          summary: isComp ? "Reopened item" : "Marked as completed"
-        };
-        return {
-          ...it,
-          status: newStatus,
-          updatedAt: updatedTime,
-          changeHistory: [...(it.changeHistory || []), changeRecord]
-        };
-      })
+      prev.map(it => it.id === id ? {
+        ...it,
+        status: newStatus,
+        updatedAt: updatedTime,
+        changeHistory: [...(it.changeHistory || []), changeRecord]
+      } : it)
     );
+
+    try {
+      await fetch(`/api/events/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          status: newStatus,
+          changes: [changeRecord]
+        })
+      });
+    } catch (err) {
+      console.warn("Could not persist status change to server:", err);
+    }
   }
 
-  // Quick subject confirmation setter
-  function updateItemSubject(id: string, newSubject: string) {
+  // Quick subject confirmation setter with server persistence
+  async function updateItemSubject(id: string, newSubject: string) {
     if (!newSubject.trim()) return;
+    const item = items.find(it => it.id === id);
+    if (!item) return;
+
+    const updatedTime = new Date().toISOString();
+    const changeRecord: ChangeRecord = {
+      id: crypto.randomUUID(),
+      eventId: id,
+      timestamp: updatedTime,
+      field: "subject",
+      oldValue: item.subject,
+      newValue: newSubject.trim(),
+      summary: `Subject set to ${newSubject.trim()}`
+    };
+
     setItems(prev =>
-      prev.map(it => {
-        if (it.id !== id) return it;
-        const updatedTime = new Date().toISOString();
-        const changeRecord = {
-          id: crypto.randomUUID(),
-          timestamp: updatedTime,
-          field: "subject",
-          oldValue: it.subject,
-          newValue: newSubject.trim(),
-          summary: `Subject set to ${newSubject.trim()}`
-        };
-        return {
-          ...it,
-          subject: newSubject.trim(),
-          updatedAt: updatedTime,
-          confidence: "HIGH",
-          changeHistory: [...(it.changeHistory || []), changeRecord]
-        };
-      })
+      prev.map(it => it.id === id ? {
+        ...it,
+        subject: newSubject.trim(),
+        updatedAt: updatedTime,
+        confidence: "HIGH",
+        needsConfirmation: false,
+        changeHistory: [...(it.changeHistory || []), changeRecord]
+      } : it)
     );
+
+    try {
+      await fetch(`/api/events/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          subject: newSubject.trim(),
+          needsConfirmation: false,
+          changes: [changeRecord]
+        })
+      });
+    } catch (err) {
+      console.warn("Could not persist subject update to server:", err);
+    }
   }
 
   return (
@@ -507,15 +556,15 @@ export default function Dashboard() {
               <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: "0.08em", color: "#64748b", textTransform: "uppercase" }}>
                 College Intelligence Hub
               </span>
-              <span style={{ fontSize: 11, background: "#e2e8f0", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>
-                Phase 1 Active
+              <span style={{ fontSize: 11, background: "#dcfce7", color: "#15803d", padding: "2px 6px", borderRadius: 4, fontWeight: 700 }}>
+                Phase 3: Supabase + Notion Live
               </span>
             </div>
             <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 6px", color: "#0f172a", letterSpacing: "-0.02em" }}>
               Academic Command Center
             </h1>
             <p style={{ margin: 0, color: "#64748b", fontSize: 14 }}>
-              WhatsApp messages → Structured academic events with modification detection and change history.
+              WhatsApp messages → Gemini AI → Supabase (Source of Truth) → Notion sync.
             </p>
           </div>
 
@@ -1098,6 +1147,23 @@ export default function Dashboard() {
                     {item.sourceGroup && (
                       <span style={{ fontSize: 11, color: "#64748b" }}>
                         via {item.sourceGroup}
+                      </span>
+                    )}
+
+                    {/* Notion synced tag */}
+                    {item.notionPageId && (
+                      <span
+                        style={{
+                          fontSize: 10,
+                          fontWeight: 700,
+                          padding: "2px 6px",
+                          borderRadius: 4,
+                          background: "#f5f3ff",
+                          color: "#6d28d9",
+                          border: "1px solid #ddd6fe"
+                        }}
+                      >
+                        📝 Synced to Notion
                       </span>
                     )}
                   </div>
