@@ -24,10 +24,10 @@ const COMMON_SUBJECTS: { pattern: RegExp; name: string }[] = [
 
 const NON_ACADEMIC_PATTERNS = [
   /^(good\s+(morning|afternoon|evening|night)|gm|ge|gn)\b/i,
-  /^(ok|okay|k|noted|yes|sure|thank\s*you|thanks|thx)\s*(sir|mam|ma'am|madam|all)?[\s.!]*$/i,
+  /^(ok|okay|k|noted|yes|sure|thank\s*you|thanks|thx|got\s*it)(\s*[,!.]*\s*(sir|mam|ma'am|madam|all|noted|thanks|thank\s*you)?)*[\s.!👍🙏🎉❤️👏]*$/i,
   /^(happy\s+(birthday|diwali|pongal|new\s*year|holi|eid|teachers?\s*day))\b/i,
   /^congratulations?\b/i,
-  /^[👍🙏🎉❤️👏]+$/
+  /^[👍🙏🎉❤️👏\s]+$/
 ];
 
 const ATTACHMENT_REGEX = /\b[\w-]+\.(?:pdf|ipynb|docx|doc|pptx|ppt|zip|csv|xlsx|png|jpg|jpeg)\b/gi;

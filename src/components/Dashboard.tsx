@@ -665,6 +665,68 @@ export default function Dashboard() {
 
         {collectorPanelOpen && (
           <div>
+            {/* Live Chat Context Bar */}
+            <div style={{
+              background: "#ffffff",
+              border: "1px solid #e2e8f0",
+              borderRadius: 12,
+              padding: "12px 16px",
+              marginBottom: 14,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: 12
+            }}>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  Current Group
+                </div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
+                  {collectorStats?.currentGroup || "None (Waiting for group)"}
+                </div>
+              </div>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+                <div>
+                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Chat Type</div>
+                  <span style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    padding: "3px 8px",
+                    borderRadius: 6,
+                    background: collectorStats?.chatType === "GROUP" ? "#dbeafe" : "#f1f5f9",
+                    color: collectorStats?.chatType === "GROUP" ? "#1e40af" : "#64748b"
+                  }}>
+                    {collectorStats?.chatType || "GROUP"}
+                  </span>
+                </div>
+
+                <div>
+                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Collection</div>
+                  <span style={{
+                    fontSize: 12,
+                    fontWeight: 700,
+                    padding: "3px 8px",
+                    borderRadius: 6,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 5,
+                    background: collectorStats?.collectionStatus === "ACTIVE" || (!collectorStats?.collectionStatus && collectorStats?.currentGroup) ? "#dcfce7" : "#f1f5f9",
+                    color: collectorStats?.collectionStatus === "ACTIVE" || (!collectorStats?.collectionStatus && collectorStats?.currentGroup) ? "#15803d" : "#64748b"
+                  }}>
+                    <span style={{
+                      width: 6,
+                      height: 6,
+                      borderRadius: "50%",
+                      background: collectorStats?.collectionStatus === "ACTIVE" || (!collectorStats?.collectionStatus && collectorStats?.currentGroup) ? "#22c55e" : "#94a3b8"
+                    }} />
+                    {collectorStats?.collectionStatus || (collectorStats?.currentGroup ? "ACTIVE" : "IDLE")}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
               <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
                 <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Messages Received</div>

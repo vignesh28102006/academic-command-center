@@ -77,6 +77,9 @@ export interface RawMessageRecord {
 
 export interface CollectorStats {
   endpointStatus: "CONFIGURED" | "AWAITING_SECRET";
+  currentGroup?: string | null;
+  chatType?: "GROUP" | "PERSONAL" | null;
+  collectionStatus?: "ACTIVE" | "PAUSED" | "IGNORED";
   totalReceived: number;
   nonAcademic: number;
   duplicate: number;

@@ -2,6 +2,9 @@ import { CollectorStats } from "../types";
 
 let stats: CollectorStats = {
   endpointStatus: process.env.COLLECTOR_SECRET ? "CONFIGURED" : "AWAITING_SECRET",
+  currentGroup: null,
+  chatType: null,
+  collectionStatus: "PAUSED",
   totalReceived: 0,
   nonAcademic: 0,
   duplicate: 0,
@@ -19,8 +22,25 @@ export function getCollectorStats(): CollectorStats {
   };
 }
 
+export function updateCollectorChatState(params: {
+  currentGroup?: string | null;
+  chatType?: "GROUP" | "PERSONAL" | null;
+  collectionStatus?: "ACTIVE" | "PAUSED" | "IGNORED";
+}): void {
+  if (params.currentGroup !== undefined) {
+    stats.currentGroup = params.currentGroup;
+  }
+  if (params.chatType !== undefined) {
+    stats.chatType = params.chatType;
+  }
+  if (params.collectionStatus !== undefined) {
+    stats.collectionStatus = params.collectionStatus;
+  }
+}
+
 export function recordCollectorMetric(params: {
   message: string;
+  sourceGroup?: string;
   result: "CREATED" | "UPDATED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC" | "FAILED";
   receivedAt?: string;
 }): void {
@@ -31,6 +51,12 @@ export function recordCollectorMetric(params: {
     ? params.message.slice(0, 77) + "..."
     : params.message;
   stats.lastResult = params.result;
+
+  if (params.sourceGroup) {
+    stats.currentGroup = params.sourceGroup;
+    stats.chatType = "GROUP";
+    stats.collectionStatus = "ACTIVE";
+  }
 
   if (params.result === "CREATED") {
     stats.eventsCreated += 1;
@@ -46,6 +72,9 @@ export function recordCollectorMetric(params: {
 export function resetCollectorStats(): void {
   stats = {
     endpointStatus: process.env.COLLECTOR_SECRET ? "CONFIGURED" : "AWAITING_SECRET",
+    currentGroup: null,
+    chatType: null,
+    collectionStatus: "PAUSED",
     totalReceived: 0,
     nonAcademic: 0,
     duplicate: 0,

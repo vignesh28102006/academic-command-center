@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Academic Command Center - WhatsApp Web Collector
 // @namespace    http://academic-command-center.local/
-// @version      1.0.0
-// @description  Securely captures academic messages from allowlisted WhatsApp groups and sends them to the local Academic Command Center.
+// @version      2.0.0
+// @description  Automatically detects and observes all WhatsApp group chats (ignoring personal 1-to-1 chats) and captures academic messages for the Academic Command Center.
 // @author       Academic Command Center
 // @match        https://web.whatsapp.com/*
 // @grant        GM_xmlhttpRequest
@@ -18,25 +18,16 @@
 
   // ===========================================================================
   // 1. CONFIGURATION
-  // Configure your allowed WhatsApp academic group/chat names and backend URL.
+  // Automatic Group Monitoring: All WhatsApp group chats you are a member of
+  // are monitored automatically. Personal 1-to-1 chats are strictly ignored.
   // ===========================================================================
   const CONFIG = {
     // URL of your local Academic Command Center backend
     backendUrl: "http://localhost:3000",
 
-    // Allowed academic group names (exact or partial matches)
-    // ONLY messages in these groups will be read and processed.
-    // Example: ["19CSE312 NLP Official", "CSE 2026 Announcements", "OS Lab Batch A"]
-    allowedGroups: [
-      "19CSE312",
-      "CS301",
-      "CS302",
-      "CS303",
-      "CSE",
-      "Academic",
-      "Announcements",
-      "Assignments"
-    ],
+    // Automatically monitor all WhatsApp group chats
+    // No manual group-name allowlisting required!
+    monitorAllGroups: true,
 
     // Collector authentication secret matching server-side COLLECTOR_SECRET in .env.local
     // NEVER put Gemini API key, Supabase keys, or Notion tokens here!
@@ -54,7 +45,9 @@
   // ===========================================================================
   const processedMessageIds = new Set();
   const processedMessageHashes = new Set();
-  let collectorInitializedAt = Date.now();
+  let currentActiveChat = null;
+  let currentIsGroup = false;
+
   let stats = {
     received: 0,
     filteredChatter: 0,
@@ -115,12 +108,52 @@
       "header span[title]",
       "header span._ao3e"
     ],
+    // Secondary subtitle line in the conversation header (participant info or status)
+    chatSubtitle: [
+      "#main header span[title].x1f66pv5",
+      "#main header span._ao3e[title]",
+      "#main header span[dir='auto']._amie",
+      "#main header div[role='button'] span[dir='auto']",
+      "#main header div._amif span",
+      "#main header div.x10l6tqk span",
+      "header div[role='button'] span[dir='auto']"
+    ],
+    // Header click target / button (e.g., "Group info" vs "Contact info")
+    headerInfoButton: [
+      "#main header [role='button'][aria-label*='info' i]",
+      "#main header [role='button'][title*='info' i]",
+      "#main header div[role='button']",
+      "#main header [data-testid='conversation-info-header']"
+    ],
+    // Group icons / avatars
+    groupIcons: [
+      "#main header [data-icon*='group']",
+      "#main header [data-testid*='group']",
+      "#main header [data-icon='community']",
+      "#main header [data-testid='community']",
+      "#main header [data-icon='announcement']",
+      "#main header [aria-label*='group' i]",
+      "#main header [aria-label*='community' i]"
+    ],
+    // Personal user icons / avatars
+    userIcons: [
+      "#main header [data-icon='default-user']",
+      "#main header [data-testid='default-user']",
+      "#main header [aria-label*='profile' i]"
+    ],
     // Message container elements in the active chat view
     messageContainers: [
       "div[data-id]",
       "div.message-in",
       "div.message-out",
       "div[role='row']"
+    ],
+    // Author header line above incoming messages in groups
+    authorHeaders: [
+      "#main span[data-testid='author']",
+      "#main span[dir='auto']._ahk_",
+      "#main span._ahk-",
+      "#main span[dir='auto']._al4b"
     ],
     // Text inside a message bubble
     messageText: [
@@ -133,20 +166,15 @@
     copyableText: [
       "div.copyable-text[data-pre-plain-text]",
       "[data-pre-plain-text]"
-    ],
-    // Sender name element
-    senderName: [
-      "span[dir='auto']._ahk_",
-      "span._ahk-",
-      "span[dir='auto']._al4b",
-      "span[data-testid='author']"
     ]
   };
 
   function queryFirst(parent, selectorList) {
     for (const sel of selectorList) {
-      const el = parent.querySelector(sel);
-      if (el) return el;
+      try {
+        const el = parent.querySelector(sel);
+        if (el) return el;
+      } catch (_) {}
     }
     return null;
   }
@@ -154,25 +182,127 @@
   function getActiveChatName() {
     const mainEl = document.getElementById("main") || document;
     for (const sel of SELECTORS.chatTitle) {
-      const el = mainEl.querySelector(sel);
-      if (el) {
-        const title = el.getAttribute("title") || el.textContent;
-        if (title && title.trim().length > 0) {
-          return title.trim();
+      try {
+        const el = mainEl.querySelector(sel);
+        if (el) {
+          const title = el.getAttribute("title") || el.textContent;
+          if (title && title.trim().length > 0) {
+            return title.trim();
+          }
         }
-      }
+      } catch (_) {}
     }
     return null;
   }
 
-  function isGroupAllowed(chatName) {
-    if (!chatName) return false;
-    const lower = chatName.toLowerCase();
-    return CONFIG.allowedGroups.some(allowed =>
-      lower.includes(allowed.toLowerCase().trim())
-    );
+  // ===========================================================================
+  // 4. GROUP CHAT DETECTION HELPER (GROUP vs PERSONAL 1-to-1)
+  // Multi-strategy detection using semantic DOM signals without scraping history.
+  // ===========================================================================
+  function isGroupChat() {
+    const mainEl = document.getElementById("main");
+    if (!mainEl) return false;
+
+    // Strategy 1: Inspect Header Action Label / Title (most direct semantic signal)
+    for (const sel of SELECTORS.headerInfoButton) {
+      try {
+        const btn = mainEl.querySelector(sel);
+        if (btn) {
+          const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").toLowerCase();
+          if (label.includes("group info") || label.includes("community info") || label.includes("group details")) {
+            return true;
+          }
+          if (label.includes("contact info") || label.includes("profile info")) {
+            return false;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Strategy 2: Header Icons & Avatars
+    for (const sel of SELECTORS.groupIcons) {
+      try {
+        if (mainEl.querySelector(sel)) {
+          return true;
+        }
+      } catch (_) {}
+    }
+    for (const sel of SELECTORS.userIcons) {
+      try {
+        if (mainEl.querySelector(sel)) {
+          return false;
+        }
+      } catch (_) {}
+    }
+
+    // Strategy 3: Header Subtitle / Participant Information
+    // In groups, subtitle lists members ("Alice, Bob, You...", "52 participants", etc.)
+    // In 1-to-1 chats, subtitle says "online", "last seen...", "typing...", or is empty
+    for (const sel of SELECTORS.chatSubtitle) {
+      try {
+        const subEl = mainEl.querySelector(sel);
+        if (subEl) {
+          const subText = (subEl.getAttribute("title") || subEl.textContent || "").toLowerCase().trim();
+          if (subText) {
+            // Explicit negative check: Personal status indicators
+            if (
+              subText === "online" ||
+              subText.startsWith("last seen") ||
+              subText === "typing..." ||
+              subText === "recording audio..."
+            ) {
+              return false;
+            }
+
+            // Explicit positive check: Group indicators
+            if (
+              subText.includes("participants") ||
+              subText.includes("members") ||
+              subText.includes("group info") ||
+              subText.includes("tap here for group info") ||
+              subText.includes("click here for group info") ||
+              subText.includes("community") ||
+              subText.includes("announcement")
+            ) {
+              return true;
+            }
+
+            // Participant list format: "Alice, Bob, You..." or contains multiple commas
+            if (subText.includes(",") && (subText.includes("you") || subText.split(",").length >= 2)) {
+              return true;
+            }
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Strategy 4: Message Bubble Author Headers
+    // In WhatsApp Web, group chats render sender author names above incoming messages
+    for (const sel of SELECTORS.authorHeaders) {
+      try {
+        const authorEl = mainEl.querySelector(sel);
+        if (authorEl && authorEl.textContent?.trim().length > 0) {
+          return true;
+        }
+      } catch (_) {}
+    }
+
+    // Strategy 5: Inspect active sidebar row in #pane-side if available
+    try {
+      const activeRow = document.querySelector("#pane-side [aria-selected='true']");
+      if (activeRow) {
+        for (const sel of SELECTORS.groupIcons) {
+          if (activeRow.querySelector(sel)) return true;
+        }
+      }
+    } catch (_) {}
+
+    return false;
   }
 
+  // ===========================================================================
+  // 5. MESSAGE DETAILS EXTRACTION
+  // ===========================================================================
   function extractMessageDetails(msgNode) {
     try {
       // 1. Extract message text
@@ -210,9 +340,9 @@
 
       // Fallback for sender if not parsed from pre-plain-text
       if (!sender) {
-        const senderEl = queryFirst(msgNode, SELECTORS.senderName);
-        if (senderEl) {
-          sender = senderEl.textContent?.trim() || null;
+        const authorEl = queryFirst(msgNode, SELECTORS.authorHeaders);
+        if (authorEl) {
+          sender = authorEl.textContent?.trim() || null;
         }
       }
 
@@ -229,8 +359,9 @@
   }
 
   // ===========================================================================
-  // 4. LOCAL MESSAGE FILTER (CONSERVATIVE PRE-FILTER)
+  // 6. LOCAL MESSAGE FILTER (CONSERVATIVE PRE-FILTER)
   // Rejects clear chatter while letting academic/uncertain messages pass to Gemini.
+  // Applies to ALL groups without requiring specific keywords in the group name.
   // ===========================================================================
   const ACADEMIC_KEYWORDS = [
     "assignment",
@@ -354,15 +485,17 @@
       return true;
     }
 
-    // 6. For uncertain longer messages in an allowlisted academic group, send to backend
+    // 6. For uncertain longer messages in an active group, send to backend
     // because Gemini is responsible for semantic interpretation
     return clean.length >= 25;
   }
 
   // ===========================================================================
-  // 5. BACKEND DISPATCH VIA GM_xmlhttpRequest
+  // 7. BACKEND DISPATCH VIA GM_xmlhttpRequest
   // Sends authenticated payload to POST /api/collector/messages
   // ===========================================================================
+  let hasBackendError = false;
+
   function sendToBackend(payload) {
     const targetUrl = `${CONFIG.backendUrl.replace(/\/+$/, "")}/api/collector/messages`;
 
@@ -383,6 +516,7 @@
       onload: function (response) {
         if (response.status >= 200 && response.status < 300) {
           stats.sentToBackend += 1;
+          hasBackendError = false;
           updateStatusBadge();
           try {
             const data = JSON.parse(response.responseText);
@@ -392,32 +526,65 @@
           }
         } else {
           stats.errors += 1;
+          hasBackendError = true;
           updateStatusBadge();
           log("Backend error response:", response.status, response.responseText);
         }
       },
       onerror: function (err) {
         stats.errors += 1;
+        hasBackendError = true;
         updateStatusBadge();
         log("Network error connecting to backend:", err);
       },
       ontimeout: function () {
         stats.errors += 1;
+        hasBackendError = true;
         updateStatusBadge();
         log("Backend request timed out.");
       }
     });
   }
 
+  function syncChatStateToBackend(groupName, isGroup) {
+    const targetUrl = `${CONFIG.backendUrl.replace(/\/+$/, "")}/api/collector/status`;
+    GM_xmlhttpRequest({
+      method: "POST",
+      url: targetUrl,
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${CONFIG.collectorSecret}`
+      },
+      data: JSON.stringify({
+        currentGroup: groupName,
+        chatType: isGroup ? "GROUP" : "PERSONAL",
+        collectionStatus: isGroup ? "ACTIVE" : "IGNORED"
+      }),
+      timeout: 5000,
+      onload: function (res) {
+        if (res.status < 400) {
+          hasBackendError = false;
+        } else {
+          hasBackendError = true;
+        }
+        updateStatusBadge();
+      },
+      onerror: function () {
+        hasBackendError = true;
+        updateStatusBadge();
+      }
+    });
+  }
+
   // ===========================================================================
-  // 6. MESSAGE PROCESSING PIPELINE
+  // 8. MESSAGE PROCESSING PIPELINE
   // ===========================================================================
   function processMessageNode(msgNode) {
     const activeChat = getActiveChatName();
     if (!activeChat) return;
 
-    // Strict privacy boundary: Process ONLY allowlisted academic groups
-    if (!isGroupAllowed(activeChat)) {
+    // Strict privacy boundary: Only process GROUP conversations
+    if (!currentIsGroup) {
       return;
     }
 
@@ -435,7 +602,7 @@
     // Local filtering
     if (!passesLocalFilter(details.text)) {
       stats.filteredChatter += 1;
-      log("Filtered local chatter:", details.text.slice(0, 30));
+      log("Filtered local chatter in group:", details.text.slice(0, 30));
       updateStatusBadge();
       return;
     }
@@ -451,11 +618,10 @@
   }
 
   // ===========================================================================
-  // 7. MUTATION OBSERVER FOR LIVE MESSAGE CAPTURE
-  // Only captures newly rendered messages; ignores pre-existing history on launch.
+  // 9. MUTATION OBSERVER & CHAT SWITCHING
+  // Only captures newly rendered messages; ignores historical chat on open.
   // ===========================================================================
   let observer = null;
-  let markedInitialMessages = false;
 
   function markExistingMessagesAsSeen() {
     const mainEl = document.getElementById("main");
@@ -472,15 +638,54 @@
     }
   }
 
+  function handleChatSwitch() {
+    const activeChat = getActiveChatName();
+    if (!activeChat) {
+      if (currentActiveChat !== null) {
+        currentActiveChat = null;
+        currentIsGroup = false;
+        updateStatusBadge();
+      }
+      return;
+    }
+
+    const isGroup = isGroupChat();
+
+    // If switched to a new chat or chat type changed
+    if (activeChat !== currentActiveChat || isGroup !== currentIsGroup) {
+      currentActiveChat = activeChat;
+      currentIsGroup = isGroup;
+
+      log("Chat switched:", activeChat, "Type:", isGroup ? "GROUP" : "PERSONAL");
+
+      // Mark existing messages as seen so history is NEVER scraped
+      markExistingMessagesAsSeen();
+
+      // Update badge UI
+      updateStatusBadge();
+
+      // Report active chat context to backend status
+      syncChatStateToBackend(activeChat, isGroup);
+    }
+  }
+
   function startObserver() {
     if (observer) observer.disconnect();
 
-    log("Starting MutationObserver for academic messages...");
+    log("Starting MutationObserver for automatic group message capture...");
 
-    // Mark current messages on start so we do not ingest historical messages
+    // Mark current messages on start
     markExistingMessagesAsSeen();
 
     observer = new MutationObserver(mutations => {
+      // Check for chat switch
+      handleChatSwitch();
+
+      // If in a personal chat, don't process message nodes
+      if (!currentIsGroup) {
+        return;
+      }
+
       for (const mutation of mutations) {
         if (mutation.type === "childList") {
           for (const node of mutation.addedNodes) {
@@ -513,8 +718,12 @@
   }
 
   // ===========================================================================
-  // 8. STATUS BADGE UI (IN-PAGE FLOATING PILL)
-  // Non-intrusive status indicator showing collector activity.
+  // 10. STATUS BADGE UI (IN-PAGE FLOATING PILL)
+  // Badge states:
+  // 🟢 ACC Collector: Observing Group
+  // ⚪ ACC Collector: Personal Chat Ignored
+  // ⚪ ACC Collector: Inactive
+  // 🔴 ACC Collector: Backend Error
   // ===========================================================================
   let badgeEl = null;
 
@@ -546,12 +755,11 @@
 
     badgeEl.title = "Academic Command Center Collector - Click to view status";
     badgeEl.addEventListener("click", () => {
-      const activeChat = getActiveChatName();
       alert(
         `🎓 Academic Command Center Collector\n\n` +
-        `• Active Chat: ${activeChat || "None"}\n` +
-        `• Allowlisted: ${isGroupAllowed(activeChat) ? "YES ✅" : "NO ❌"}\n` +
-        `• Allowed Groups Configured: ${CONFIG.allowedGroups.length}\n` +
+        `• Active Chat: ${currentActiveChat || "None"}\n` +
+        `• Chat Type: ${currentIsGroup ? "GROUP (Automatic Observation)" : (currentActiveChat ? "PERSONAL (Ignored)" : "None")}\n` +
+        `• Mode: Automatic Group Detection (No manual allowlist)\n` +
         `• Messages Captured: ${stats.received}\n` +
         `• Filtered Chatter: ${stats.filteredChatter}\n` +
         `• Sent to Backend: ${stats.sentToBackend}\n` +
@@ -566,32 +774,47 @@
 
   function updateStatusBadge() {
     if (!badgeEl) return;
-    const activeChat = getActiveChatName();
-    const isAllowed = isGroupAllowed(activeChat);
 
-    const dotColor = isAllowed ? "#22c55e" : "#94a3b8";
-    const statusText = isAllowed ? "Observing Group" : "Inactive (Non-academic)";
+    let dotColor = "#94a3b8";
+    let statusText = "Inactive";
+
+    if (hasBackendError) {
+      dotColor = "#ef4444";
+      statusText = "Backend Error";
+    } else if (currentActiveChat) {
+      if (currentIsGroup) {
+        dotColor = "#22c55e";
+        statusText = "Observing Group";
+      } else {
+        dotColor = "#94a3b8";
+        statusText = "Personal Chat Ignored";
+      }
+    }
+
+    const groupLabel = currentIsGroup && currentActiveChat
+      ? `<span style="color:#38bdf8;font-weight:600;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${currentActiveChat}</span>`
+      : "";
 
     badgeEl.innerHTML = `
       <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};box-shadow:0 0 6px ${dotColor}"></span>
       <span style="font-weight:600">ACC Collector:</span>
       <span>${statusText}</span>
+      ${groupLabel}
       <span style="background:#1e293b;padding:2px 6px;border-radius:10px;font-size:10px;margin-left:4px">🚀 ${stats.sentToBackend}</span>
     `;
   }
 
   // ===========================================================================
-  // 9. INITIALIZATION
-  // Wait for WhatsApp Web to load its main interface before attaching observer.
+  // 11. INITIALIZATION
   // ===========================================================================
   function init() {
-    log("Initializing Academic Command Center Collector...");
+    log("Initializing Academic Command Center Collector v2.0 (Auto-Group Detection)...");
     createStatusBadge();
 
-    // Check periodically for chat header change to update badge
+    // Check periodically for chat header change to update state & badge
     setInterval(() => {
-      updateStatusBadge();
-    }, 2000);
+      handleChatSwitch();
+    }, 1500);
 
     // Start observer
     startObserver();

@@ -76,6 +76,7 @@ export async function POST(request: Request) {
     // 4. Update Collector Metrics
     recordCollectorMetric({
       message,
+      sourceGroup,
       result: result.action,
       receivedAt: messageTimestamp
     });
