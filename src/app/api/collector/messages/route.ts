@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { processAcademicMessagePipeline } from "@/lib/messages/processor";
 import { recordCollectorMetric, getCollectorStats } from "@/lib/collector/stats";
+import { isMessageEligibleForBackfill } from "@/lib/dateUtils";
+import { updateCollectorGroupCursor } from "@/lib/db/collectorState";
 
 const collectorMessageSchema = z.object({
   message: z.string().min(1, "message cannot be empty"),
@@ -63,6 +65,29 @@ export async function POST(request: Request) {
 
     const { message, sourceGroup, sourceSender, messageTimestamp, sourceMessageId } = parseResult.data;
 
+    // Boundary Check: Messages before September 10, 2026 are strictly ignored
+    if (messageTimestamp && !isMessageEligibleForBackfill(messageTimestamp)) {
+      recordCollectorMetric({
+        message,
+        sourceGroup,
+        result: "NON_ACADEMIC",
+        receivedAt: messageTimestamp
+      });
+      await updateCollectorGroupCursor(sourceGroup, {
+        groupName: sourceGroup,
+        messagesScannedIncrement: 1,
+        messagesIgnoredIncrement: 1
+      });
+      return NextResponse.json(
+        {
+          success: true,
+          action: "IGNORED_OUT_OF_RANGE",
+          reason: "Message timestamp is prior to the September 10, 2026 initial backfill boundary."
+        },
+        { status: 200 }
+      );
+    }
+
     // 3. Process via Academic Engine Pipeline
     const result = await processAcademicMessagePipeline({
       message,
@@ -73,12 +98,19 @@ export async function POST(request: Request) {
       sourceMessageId
     });
 
-    // 4. Update Collector Metrics
+    // 4. Update Collector Metrics & Group State
     recordCollectorMetric({
       message,
       sourceGroup,
       result: result.action,
       receivedAt: messageTimestamp
+    });
+
+    await updateCollectorGroupCursor(sourceGroup, {
+      groupName: sourceGroup,
+      messagesScannedIncrement: 1,
+      messagesProcessedIncrement: (result.action === "CREATED" || result.action === "UPDATED") ? 1 : 0,
+      messagesIgnoredIncrement: (result.action === "IGNORED_DUPLICATE" || result.action === "NON_ACADEMIC") ? 1 : 0
     });
 
     // 5. Return Clean Response (Strictly no API keys or internal secrets)

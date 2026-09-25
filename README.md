@@ -99,6 +99,29 @@ const CONFIG = {
   // Manual group-name allowlisting is NOT required.
   monitorAllGroups: true,
 
+  // AUTOMATED 2-HOUR SCAN CYCLE:
+  // Automatically initiates a backfill / incremental collection cycle every 2 hours
+  scanIntervalMs: 2 * 60 * 60 * 1000,
+
+  // AUTOMATED GROUP NAVIGATION:
+  // If true, sequentially opens discovered groups to backfill messages up to Sept 10, 2026
+  autoNavigateGroups: true,
+
+  // HISTORICAL BACKFILL BOUNDARY:
+  // Messages prior to September 10, 2026 are strictly ignored and not collected
+  backfillBoundaryDate: "2026-09-10T00:00:00+05:30",
+
+  // Monitored groups list (used if monitorAllGroups is set to false)
+  monitoredGroups: [
+    "CSE-C Announcements",
+    "23cse351 FoDS G1",
+    "NLP 2026 batch",
+    "NLP 2026",
+    "CSE-C Official 2024",
+    "Machine Learning CSE-C",
+    "Computer Networks CSE-C"
+  ],
+
   cacheSize: 500,
   debug: true
 };
@@ -111,8 +134,10 @@ const CONFIG = {
 
 1. Open or refresh [web.whatsapp.com](https://web.whatsapp.com).
 2. Look at the bottom-right corner of the page for the floating status badge:
-   - **When viewing a Group Chat** (e.g. `CSE-C Official 2024`, `Machine Learning CSE-C`, `General`):
+   - **When viewing a Group Chat** (e.g. `NLP 2026 batch`, `CSE-C Official 2024`, `Machine Learning CSE-C`, `General`):
      `🟢 ACC Collector: Observing Group`
+   - **When performing 2-Hour Backfill / Scan**:
+     `🔄 ACC Collector: Scanning Groups`
    - **When viewing a Personal 1-to-1 Chat**:
      `⚪ ACC Collector: Personal Chat Ignored`
    - **When WhatsApp Web is Loading or Inactive**:
@@ -123,67 +148,69 @@ const CONFIG = {
 
 ---
 
-## Automatic Group Detection & Privacy Architecture
+## 2-Hour Recurring Scan Cycle & Backfill Architecture
 
-The collector automatically recognizes group chats and does not require manual group-name allowlisting. Personal 1-to-1 chats are ignored. Only newly observed messages from a group are processed.
+### 1. Initial Historical Backfill (Boundary: September 10, 2026)
+- On first discovery of a WhatsApp group, the collector enters `BACKFILLING` mode.
+- It leverages WhatsApp Web's virtual scroller (`#main div[data-tab="8"]` / chat panel) to load older messages back to **September 10, 2026**.
+- Any messages timestamped prior to September 10, 2026 are strictly ignored and discarded.
+- Once backfill reaches September 10 (or top of conversation history), the group state records `backfillComplete: true`.
 
-### How WhatsApp Group vs. Personal Chat Detection Works
+### 2. Persistent Per-Group Collection Cursors (`collector_group_state`)
+- Every group maintains its own independent collection cursor in the database (`last_processed_message_timestamp` and `last_processed_message_id`).
+- When a new message is successfully processed, the group's cursor timestamp advances to that message's timestamp.
+- **Failed Processing Protection**: If a message fails ingestion or an error occurs, the cursor is **held** at the last successful message and does **not** advance past failed items.
 
-Because WhatsApp Web utilizes dynamic, minified CSS class names across browser releases, the collector employs a resilient, multi-tiered semantic DOM heuristic:
+### 3. Incremental Scanning (Resuming from Cursor)
+- On recurring 2-hour scan runs (or when switching groups), the collector queries the backend for the group's saved cursor.
+- The collector scans only messages strictly newer than the saved cursor timestamp (`isMessageNewerThanCursor`).
+- The collector **never** rescans from September 10, 2026 after the initial backfill is complete.
 
-1. **Tier 1: Conversation Header Action Button**
-   - Clicking or hovering over the header menu/title provides semantic action labels:
-     - Group Chat: `aria-label` or title containing `"Group info"`, `"Community info"`, or `"Group details"`.
-     - Personal Chat: `aria-label` or title containing `"Contact info"` or `"Profile info"`.
-2. **Tier 2: Header Avatar Icons & SVGs**
-   - Group Chat: Contains SVGs or elements with attributes `[data-icon*="group"]`, `[data-testid*="group"]`, `[data-icon="community"]`, or `[data-icon="announcement"]`.
-   - Personal Chat: Header avatar contains `[data-icon="default-user"]` or single-user profile photos.
-3. **Tier 3: Participant Subtitle Information**
-   - Group Chat: Subtitle displays participant lists (`"Alice, Bob, You..."`), member counts (`"64 participants"`, `"14 members"`), or `"tap here for group info"`.
-   - Personal Chat: Subtitle explicitly displays presence indicators (`"online"`, `"last seen..."`, `"typing..."`), a standalone phone number, or is blank.
-4. **Tier 4: Message Bubble Author Headers**
-   - Group Chat: Incoming messages from participants render sender display names (author headers) above the text bubble.
-   - Personal Chat: Incoming messages never render author name headers above individual bubbles.
+### 4. Strict Privacy Boundary (1-to-1 Personal Chats)
+- Personal chats are identified locally in the browser via DOM heuristics (`[data-icon="default-user"]`, `"online"`, `"last seen"`, `"Contact info"`).
+- Personal chats are **never** collected, monitored, or navigated into.
+- Personal message contents never leave the browser.
 
-### DOM Limitations & Non-Disruptive Design
-
-- **No Automated Chat Clicking/Navigation**: The collector does **NOT** crawl, click, or switch through sidebar chats automatically. The user navigates WhatsApp Web normally.
-- **No Historical Scraping**: When a user switches to a group, all messages already rendered in the DOM are immediately registered in the client deduplication cache (`seenMessageIds` / `seenMessageHashes`). Only messages rendered *after* the chat becomes active are processed.
-- **Strict Privacy Boundary**: Personal 1-to-1 conversations are strictly rejected on the client before reading message bodies or issuing network requests.
-- **Local Chatter Filter**: Casual greetings, single-word acknowledgments, and emoji reactions are filtered locally in the browser. Unsure or potential academic messages are sent to the backend where Gemini AI evaluates them.
-- **Zero Sensitive Credential Exposure**:
-  - The userscript contains **no** Gemini API keys, **no** Supabase database keys, and **no** Notion tokens.
-  - The userscript authenticates solely via `Authorization: Bearer <COLLECTOR_SECRET>`.
-  - The backend verifies `COLLECTOR_SECRET` server-side and rejects unauthorized requests with HTTP 401/403.
-- **Backend Hash Deduplication**: Every message is SHA-256 hashed and recorded in `raw_messages`. Duplicate messages are ignored and produce zero database mutations.
+### 5. WhatsApp Web Session Continuity
+- The collector requires WhatsApp Web to remain open in the browser.
+- If WhatsApp Web is closed or disconnected, the backend reports `whatsappStatus: "UNAVAILABLE"`.
+- All cursors and group states remain preserved in Supabase PostgreSQL; collection automatically resumes from saved cursors when WhatsApp Web reconnects.
 
 ---
 
 ## Testing & Verification
 
 ### Run Automated Test Suite
-To run all 53 automated tests (deterministic engine, AI fixtures, Supabase/Notion layer, and collector):
+To run all 67 automated tests across all 4 test suites:
 ```bash
 npm test
 ```
+Includes:
+- Parser & Event Engine Self-Check (6 tests)
+- AI Parser & Event Fixtures (22 tests)
+- Supabase PostgreSQL & Notion Sync (13 tests)
+- WhatsApp Collector Phase 4A/4B (26 tests)
 
 ### Run Production Build Check
 ```bash
 npm run build
 ```
 
-### Run Manual Collector Test Script
-With your backend running on `http://localhost:3000`:
+### Run Collector Integration Script
+With the Next.js backend running on `http://localhost:3000`:
 ```bash
 node scripts/test-collector.mjs
 ```
 This script exercises:
 - Authentication rejection (401 on missing token, 403 on invalid secret)
 - Academic assignment ingestion & submission link parsing
-- Postponement detection (e.g. 30 Sep → 3 Oct) updating the existing event
-- Ambiguous message handling (`"Please submit this soon."` flags `needsConfirmation = true`)
-- Message deduplication prevention
-- Live collector status API verification (`GET /api/collector/status`)
+- Postponement detection updating existing events without duplicates
+- Casual chatter filtering (`NON_ACADEMIC`)
+- Message deduplication prevention (`IGNORED_DUPLICATE`)
+- Pre-September 10 message boundary filtering (`IGNORED_OUT_OF_RANGE`)
+- Per-group registration & cursor advancement (`/api/collector/groups`)
+- Scan history tracking lifecycle (`/api/collector/scans`)
+- Live collector status reporting (`/api/collector/status`)
 
 ---
 
@@ -195,30 +222,40 @@ academic-command-center/
 │   ├── app/
 │   │   ├── api/
 │   │   │   ├── collector/
-│   │   │   │   ├── messages/route.ts   # Authenticated collector ingestion
-│   │   │   │   └── status/route.ts     # Collector health & metrics
-│   │   │   ├── events/route.ts         # GET / POST academic events
-│   │   │   ├── events/[id]/route.ts    # GET / PATCH / DELETE event
-│   │   │   └── messages/process/route.ts # Direct message processing
+│   │   │   │   ├── groups/route.ts         # GET / POST collector groups
+│   │   │   │   ├── groups/[id]/route.ts    # GET group by id or name
+│   │   │   │   ├── groups/[id]/cursor/route.ts # PATCH cursor & metrics
+│   │   │   │   ├── messages/route.ts       # Authenticated message ingestion
+│   │   │   │   ├── scans/route.ts          # GET / POST 2-hour scan history
+│   │   │   │   └── status/route.ts         # Collector health & aggregates
+│   │   │   ├── events/route.ts             # GET / POST academic events
+│   │   │   ├── events/[id]/route.ts        # GET / PATCH / DELETE event
+│   │   │   └── messages/process/route.ts   # Direct message processing
 │   ├── components/
-│   │   └── Dashboard.tsx               # 9-view dashboard + Collector Status Panel
+│   │   └── Dashboard.tsx                   # 9-view dashboard + Collector Panel
 │   ├── lib/
-│   │   ├── ai/                         # Gemini provider & JSON schemas
+│   │   ├── ai/                             # Gemini provider & JSON schemas
 │   │   ├── collector/
-│   │   │   ├── stats.ts                # KPI metrics tracking
-│   │   │   └── collector.test.ts       # Phase 4A test suite
-│   │   ├── db/                         # Supabase data layer (CRUD + change history)
+│   │   │   ├── auth.ts                     # Collector secret verification
+│   │   │   ├── group-detection.ts          # DOM heuristic detectors
+│   │   │   ├── stats.ts                    # KPI metrics tracking
+│   │   │   └── collector.test.ts           # Phase 4A/4B test suite (26 tests)
+│   │   ├── db/
+│   │   │   ├── collectorState.ts           # Group state & scan persistence
+│   │   │   ├── academicEvents.ts           # Event store & CRUD
+│   │   │   ├── rawMessages.ts              # Hash deduplication & raw logs
+│   │   │   └── subjectMappings.ts          # Subject alias resolution
 │   │   ├── messages/
-│   │   │   └── processor.ts            # Shared processing pipeline
-│   │   ├── notion/                     # Notion client, mapper & sync
-│   │   ├── parser.ts                   # Deterministic parser & date normalizer
-│   │   └── events.ts                   # Event intelligence engine
+│   │   │   └── processor.ts                # Shared processing pipeline
+│   │   ├── notion/                         # Notion client, mapper & sync
+│   │   ├── parser.ts                       # Deterministic parser & normalizer
+│   │   └── events.ts                       # Event intelligence engine
 ├── supabase/
-│   └── schema.sql                      # PostgreSQL DDL
+│   └── schema.sql                          # PostgreSQL DDL
 ├── userscript/
-│   └── academic-command-center.user.js # Tampermonkey WhatsApp Web collector
+│   └── academic-command-center.user.js     # Tampermonkey collector v3.0
 ├── scripts/
-│   ├── test-collector.mjs              # Collector manual test script
-│   └── verify-api.mjs                  # API route verification
+│   ├── test-collector.mjs                  # Collector integration test script
+│   └── verify-api.mjs                      # API route verification
 └── package.json
 ```

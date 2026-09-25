@@ -19,6 +19,7 @@ const COMMON_SUBJECTS: { pattern: RegExp; name: string }[] = [
   { pattern: /\b(iot|internet of things)\b/i, name: "IoT" },
   { pattern: /\b(pfl|formal languages|automata|toc)\b/i, name: "Automata" },
   { pattern: /\b(maths?|mathematics|linear algebra|calculus|probability)\b/i, name: "Mathematics" },
+  { pattern: /\b(fods|foundations of data science|23cse351)\b/i, name: "FoDS" },
   { pattern: /\b(cyber security|network security|infosec)\b/i, name: "Cybersecurity" }
 ];
 

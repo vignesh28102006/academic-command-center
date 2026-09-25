@@ -189,7 +189,7 @@ async function runPhase3Tests() {
     databases = {
       query: async (params: any) => {
         const eventIdFilter = params.filter?.rich_text?.equals;
-        for (const page of mockNotionPages.values()) {
+        for (const page of Array.from(mockNotionPages.values())) {
           const pageEventId = page.properties["Database Event ID"]?.rich_text?.[0]?.text?.content;
           if (pageEventId === eventIdFilter) {
             return { results: [page] };

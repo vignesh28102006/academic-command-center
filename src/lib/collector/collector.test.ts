@@ -1,13 +1,18 @@
 import assert from "node:assert";
 import { POST as handleCollectorMessage } from "../../app/api/collector/messages/route";
 import { POST as handleCollectorStatus, GET as getCollectorStatusApi } from "../../app/api/collector/status/route";
+import { POST as registerCollectorGroupApi, GET as getCollectorGroupsApi } from "../../app/api/collector/groups/route";
+import { GET as getCollectorGroupByIdApi } from "../../app/api/collector/groups/[id]/route";
+import { PATCH as updateCollectorCursorApi } from "../../app/api/collector/groups/[id]/cursor/route";
+import { POST as saveCollectorScanApi, GET as getCollectorScansApi } from "../../app/api/collector/scans/route";
+import { isMessageEligibleForBackfill, isMessageNewerThanCursor } from "../dateUtils";
 import { processAcademicMessagePipeline } from "../messages/processor";
 import { hashMessage, isMessageProcessed, getRawMessages } from "../db/rawMessages";
 import { getAllAcademicEvents, getAcademicEventById } from "../db/academicEvents";
 import { getCollectorStats, resetCollectorStats } from "./stats";
 import { detectIsGroupChat } from "./group-detection";
 
-console.log("=== RUNNING PHASE 4A: WHATSAPP WEB COLLECTOR TEST SUITE ===");
+console.log("=== RUNNING PHASE 4A/4B: WHATSAPP WEB COLLECTOR TEST SUITE ===");
 
 async function runPhase4ATests() {
   const TEST_SECRET = "test-collector-secret-4a";
@@ -208,6 +213,9 @@ async function runPhase4ATests() {
   // ---------------------------------------------------------------------------
   const arbitraryGroups = [
     "CSE-C Official 2024",
+    "CSE-C Announcements",
+    "23cse351 FoDS G1",
+    "NLP 2026 batch",
     "Machine Learning CSE-C",
     "Computer Networks CSE-C",
     "TOC 23CSE303 - CSE-C",
@@ -430,8 +438,331 @@ async function runPhase4ATests() {
   assert.strictEqual(responseJsonStr.includes("NOTION_TOKEN"), false, "NOTION token must not leak");
   console.log("✓ Test 15 passed: Zero secret leakage in API responses");
 
+  // ---------------------------------------------------------------------------
+  // Test 16: Ingestion from 'NLP 2026 batch' with Subject Mapping to NLP
+  // ---------------------------------------------------------------------------
+  const nlpMsgTag = Date.now().toString().slice(-4);
+  const nlpMessage = `Assignment on Word Embeddings and Tokenization due 15 October at 11:59 PM: https://forms.gle/nlp-${nlpMsgTag}`;
+  const req16 = makeRequest(
+    {
+      message: nlpMessage,
+      sourceGroup: "NLP 2026 batch",
+      sourceSender: "NLP Faculty Dr Sharma",
+      messageTimestamp: "2026-10-02T10:00:00Z"
+    },
+    `Bearer ${TEST_SECRET}`
+  );
+  const res16 = await handleCollectorMessage(req16);
+  assert.strictEqual(res16.status, 201, "Message from 'NLP 2026 batch' must be accepted and ingested");
+  const data16 = await res16.json();
+  assert.strictEqual(data16.success, true);
+  assert.strictEqual(data16.item?.subject, "NLP", "Subject must resolve to 'NLP' from 'NLP 2026 batch'");
+  assert.strictEqual(data16.item?.sourceGroup, "NLP 2026 batch", "sourceGroup must be preserved as 'NLP 2026 batch'");
+  console.log("✓ Test 16 passed: 'NLP 2026 batch' message accepted with subject mapped to NLP");
+
+  // ---------------------------------------------------------------------------
+  // Test 17: Ingestion from '23cse351 FoDS G1' with Subject Mapping to FoDS
+  // ---------------------------------------------------------------------------
+  const fodsMsgTag = Date.now().toString().slice(-4);
+  const fodsMessage = `FoDS Lab Exercise 3 on Data Wrangling deadline is 18 October at 11:59 PM: https://forms.gle/fods-${fodsMsgTag}`;
+  const req17 = makeRequest(
+    {
+      message: fodsMessage,
+      sourceGroup: "23cse351 FoDS G1",
+      sourceSender: "FoDS Faculty",
+      messageTimestamp: "2026-10-02T11:00:00Z"
+    },
+    `Bearer ${TEST_SECRET}`
+  );
+  const res17 = await handleCollectorMessage(req17);
+  assert.strictEqual(res17.status, 201, "Message from '23cse351 FoDS G1' must be accepted and ingested");
+  const data17 = await res17.json();
+  assert.strictEqual(data17.success, true);
+  assert.strictEqual(data17.item?.subject, "FoDS", "Subject must resolve to 'FoDS' from '23cse351 FoDS G1'");
+  assert.strictEqual(data17.item?.sourceGroup, "23cse351 FoDS G1", "sourceGroup must be preserved as '23cse351 FoDS G1'");
+  console.log("✓ Test 17 passed: '23cse351 FoDS G1' message accepted with subject mapped to FoDS");
+
+  // ---------------------------------------------------------------------------
+  // Test 18: Ingestion from 'CSE-C Announcements' Group
+  // ---------------------------------------------------------------------------
+  const announceMsg = `Class will be held in Seminar Hall B tomorrow at 9:00 AM instead of Lab 3.`;
+  const req18 = makeRequest(
+    {
+      message: announceMsg,
+      sourceGroup: "CSE-C Announcements",
+      sourceSender: "Class Representative",
+      messageTimestamp: "2026-10-02T12:00:00Z"
+    },
+    `Bearer ${TEST_SECRET}`
+  );
+  const res18 = await handleCollectorMessage(req18);
+  assert.strictEqual(res18.status, 201, "Message from 'CSE-C Announcements' must be accepted and ingested");
+  const data18 = await res18.json();
+  assert.strictEqual(data18.success, true);
+  assert.strictEqual(data18.item?.sourceGroup, "CSE-C Announcements", "sourceGroup must be preserved as 'CSE-C Announcements'");
+  console.log("✓ Test 18 passed: 'CSE-C Announcements' message accepted and ingested");
+
+  // ---------------------------------------------------------------------------
+  // Test 19: September 10, 2026 Backfill Boundary Filtering
+  // ---------------------------------------------------------------------------
+  // Messages prior to September 10, 2026 must be strictly ignored
+  assert.strictEqual(
+    isMessageEligibleForBackfill("2026-09-09T23:59:59+05:30"),
+    false,
+    "Message from Sept 9 must NOT be eligible for backfill"
+  );
+  assert.strictEqual(
+    isMessageEligibleForBackfill("2026-09-10T00:00:00+05:30"),
+    true,
+    "Message at midnight Sept 10 MUST be eligible for backfill"
+  );
+  assert.strictEqual(
+    isMessageEligibleForBackfill("2026-09-20T12:00:00+05:30"),
+    true,
+    "Message after Sept 10 MUST be eligible for backfill"
+  );
+
+  // Sending an out-of-boundary message to the collector API
+  const oldMessageReq = makeRequest(
+    {
+      message: "Old announcement from early September",
+      sourceGroup: "CSE-C Official 2024",
+      sourceSender: "Faculty",
+      messageTimestamp: "2026-09-05T10:00:00+05:30"
+    },
+    `Bearer ${TEST_SECRET}`
+  );
+  const oldMessageRes = await handleCollectorMessage(oldMessageReq);
+  assert.strictEqual(oldMessageRes.status, 200);
+  const oldMessageData = await oldMessageRes.json();
+  assert.strictEqual(oldMessageData.action, "IGNORED_OUT_OF_RANGE");
+  console.log("✓ Test 19 passed: September 10, 2026 backfill boundary filtering strictly enforced");
+
+  // ---------------------------------------------------------------------------
+  // Test 20: Persistent Per-Group Registration & Cursors (/api/collector/groups)
+  // ---------------------------------------------------------------------------
+  const groupRegReq = makeRequest(
+    {
+      groupName: "CSE-C Core 2026",
+      groupIdentifier: "CSE-C Core 2026"
+    },
+    `Bearer ${TEST_SECRET}`,
+    "http://localhost:3000/api/collector/groups"
+  );
+  const groupRegRes = await registerCollectorGroupApi(groupRegReq);
+  assert.strictEqual(groupRegRes.status, 201);
+  const groupRegData = await groupRegRes.json();
+  assert.strictEqual(groupRegData.group.groupName, "CSE-C Core 2026");
+  assert.ok(groupRegData.group.firstBackfillDate.startsWith("2026-09-10"));
+  assert.strictEqual(groupRegData.group.backfillComplete, false);
+
+  const getGroupsReq = new Request("http://localhost:3000/api/collector/groups");
+  const getGroupsRes = await getCollectorGroupsApi(getGroupsReq);
+  const getGroupsData = await getGroupsRes.json();
+  assert.ok(getGroupsData.groups.some((g: any) => g.groupName === "CSE-C Core 2026"));
+  console.log("✓ Test 20 passed: Group registration and default backfill date (2026-09-10) verified");
+
+  // ---------------------------------------------------------------------------
+  // Test 21: Persistent Per-Group Cursor Updates (PATCH /cursor)
+  // ---------------------------------------------------------------------------
+  const cursorUpdateReq = makeRequest(
+    {
+      lastProcessedMessageTimestamp: "2026-09-15T10:00:00.000Z",
+      lastProcessedMessageId: "wamid.TEST_MSG_1",
+      backfillComplete: true,
+      status: "MONITORING",
+      messagesScannedIncrement: 45,
+      messagesProcessedIncrement: 5,
+      messagesIgnoredIncrement: 40
+    },
+    `Bearer ${TEST_SECRET}`,
+    "http://localhost:3000/api/collector/groups/CSE-C%20Core%202026/cursor"
+  );
+  const cursorUpdateRes = await updateCollectorCursorApi(cursorUpdateReq, {
+    params: Promise.resolve({ id: "CSE-C Core 2026" })
+  });
+  assert.strictEqual(cursorUpdateRes.status, 200);
+  const cursorUpdateData = await cursorUpdateRes.json();
+  assert.strictEqual(cursorUpdateData.group.backfillComplete, true);
+  assert.strictEqual(cursorUpdateData.group.lastProcessedMessageTimestamp, "2026-09-15T10:00:00.000Z");
+  assert.strictEqual(cursorUpdateData.group.status, "MONITORING");
+  assert.strictEqual(cursorUpdateData.group.messagesScanned, 45);
+
+  const getSingleGroupReq = new Request("http://localhost:3000/api/collector/groups/CSE-C%20Core%202026");
+  const getSingleGroupRes = await getCollectorGroupByIdApi(getSingleGroupReq, {
+    params: Promise.resolve({ id: "CSE-C Core 2026" })
+  });
+  const getSingleGroupData = await getSingleGroupRes.json();
+  assert.strictEqual(getSingleGroupData.group.backfillComplete, true);
+  assert.strictEqual(getSingleGroupData.group.lastProcessedMessageTimestamp, "2026-09-15T10:00:00.000Z");
+  console.log("✓ Test 21 passed: Persistent per-group cursor updates and retrieval verified");
+
+  // ---------------------------------------------------------------------------
+  // Test 22: Incremental Scanning (Resuming from Cursor, Never Rescanning Sept 10)
+  // ---------------------------------------------------------------------------
+  const currentCursor = cursorUpdateData.group.lastProcessedMessageTimestamp;
+  assert.strictEqual(
+    isMessageNewerThanCursor("2026-09-14T09:00:00.000Z", currentCursor),
+    false,
+    "Messages older than saved cursor must be skipped (no rescan from Sept 10)"
+  );
+  assert.strictEqual(
+    isMessageNewerThanCursor("2026-09-15T10:00:00.000Z", currentCursor),
+    false,
+    "Message matching exact cursor timestamp must not be re-processed"
+  );
+  assert.strictEqual(
+    isMessageNewerThanCursor("2026-09-16T12:00:00.000Z", currentCursor),
+    true,
+    "Message newer than saved cursor must be eligible for incremental processing"
+  );
+  console.log("✓ Test 22 passed: Incremental scan correctly resumes from cursor without re-scanning");
+
+  // ---------------------------------------------------------------------------
+  // Test 23: Per-Group Independence (Group A cursor != Group B cursor)
+  // ---------------------------------------------------------------------------
+  const groupBReq = makeRequest(
+    {
+      groupName: "23cse351 FoDS G1",
+      groupIdentifier: "23cse351 FoDS G1"
+    },
+    `Bearer ${TEST_SECRET}`,
+    "http://localhost:3000/api/collector/groups"
+  );
+  await registerCollectorGroupApi(groupBReq);
+
+  const groupBCursorReq = makeRequest(
+    {
+      lastProcessedMessageTimestamp: "2026-09-20T18:00:00.000Z",
+      lastProcessedMessageId: "wamid.FODS_MSG_9",
+      backfillComplete: true,
+      status: "IDLE"
+    },
+    `Bearer ${TEST_SECRET}`,
+    "http://localhost:3000/api/collector/groups/23cse351%20FoDS%20G1/cursor"
+  );
+  await updateCollectorCursorApi(groupBCursorReq, {
+    params: Promise.resolve({ id: "23cse351 FoDS G1" })
+  });
+
+  const checkGroupARes = await getCollectorGroupByIdApi(
+    new Request("http://localhost:3000/api/collector/groups/CSE-C%20Core%202026"),
+    { params: Promise.resolve({ id: "CSE-C Core 2026" }) }
+  );
+  const checkGroupAData = await checkGroupARes.json();
+
+  const checkGroupBRes = await getCollectorGroupByIdApi(
+    new Request("http://localhost:3000/api/collector/groups/23cse351%20FoDS%20G1"),
+    { params: Promise.resolve({ id: "23cse351 FoDS G1" }) }
+  );
+  const checkGroupBData = await checkGroupBRes.json();
+
+  assert.strictEqual(checkGroupAData.group.lastProcessedMessageTimestamp, "2026-09-15T10:00:00.000Z");
+  assert.strictEqual(checkGroupBData.group.lastProcessedMessageTimestamp, "2026-09-20T18:00:00.000Z");
+  assert.notStrictEqual(
+    checkGroupAData.group.lastProcessedMessageTimestamp,
+    checkGroupBData.group.lastProcessedMessageTimestamp,
+    "Group A and Group B cursors must be fully independent"
+  );
+  console.log("✓ Test 23 passed: Group cursors operate independently across different WhatsApp groups");
+
+  // ---------------------------------------------------------------------------
+  // Test 24: Scan History Tracking (/api/collector/scans)
+  // ---------------------------------------------------------------------------
+  const scanStartReq = makeRequest(
+    {
+      status: "IN_PROGRESS",
+      groupsDiscovered: 4,
+      groupsCompleted: 0,
+      groupsFailed: 0,
+      messagesScanned: 0,
+      messagesProcessed: 0,
+      messagesIgnored: 0,
+      eventsCreated: 0,
+      eventsUpdated: 0
+    },
+    `Bearer ${TEST_SECRET}`,
+    "http://localhost:3000/api/collector/scans"
+  );
+  const scanStartRes = await saveCollectorScanApi(scanStartReq);
+  assert.strictEqual(scanStartRes.status, 201);
+  const scanStartData = await scanStartRes.json();
+  const scanId = scanStartData.scan.id;
+  assert.ok(scanId);
+  assert.strictEqual(scanStartData.scan.status, "IN_PROGRESS");
+
+  const scanEndReq = makeRequest(
+    {
+      id: scanId,
+      completedAt: new Date().toISOString(),
+      status: "COMPLETED",
+      groupsCompleted: 4,
+      messagesScanned: 120,
+      messagesProcessed: 8,
+      messagesIgnored: 112,
+      eventsCreated: 2,
+      eventsUpdated: 1
+    },
+    `Bearer ${TEST_SECRET}`,
+    "http://localhost:3000/api/collector/scans"
+  );
+  const scanEndRes = await saveCollectorScanApi(scanEndReq);
+  const scanEndData = await scanEndRes.json();
+  assert.strictEqual(scanEndData.scan.status, "COMPLETED");
+  assert.strictEqual(scanEndData.scan.groupsCompleted, 4);
+
+  const getScansReq = new Request("http://localhost:3000/api/collector/scans");
+  const getScansRes = await getCollectorScansApi(getScansReq);
+  const getScansData = await getScansRes.json();
+  assert.ok(getScansData.scans.some((s: any) => s.id === scanId));
+  console.log("✓ Test 24 passed: Scan history cycle lifecycle (IN_PROGRESS -> COMPLETED) tracked accurately");
+
+  // ---------------------------------------------------------------------------
+  // Test 25: Failed Processing Cursor Hold (Cursor Does NOT Advance Past Failure)
+  // ---------------------------------------------------------------------------
+  const preFailGroupRes = await getCollectorGroupByIdApi(
+    new Request("http://localhost:3000/api/collector/groups/CSE-C%20Core%202026"),
+    { params: Promise.resolve({ id: "CSE-C Core 2026" }) }
+  );
+  const preFailData = await preFailGroupRes.json();
+  const savedCursorBeforeError = preFailData.group.lastProcessedMessageTimestamp;
+
+  // When error occurs, we record status: ERROR and lastError, but DO NOT advance lastProcessedMessageTimestamp
+  const failUpdateReq = makeRequest(
+    {
+      status: "ERROR",
+      lastError: "Network failure parsing message attachment",
+      messagesScannedIncrement: 1
+      // Note: lastProcessedMessageTimestamp intentionally NOT updated
+    },
+    `Bearer ${TEST_SECRET}`,
+    "http://localhost:3000/api/collector/groups/CSE-C%20Core%202026/cursor"
+  );
+  const failUpdateRes = await updateCollectorCursorApi(failUpdateReq, {
+    params: Promise.resolve({ id: "CSE-C Core 2026" })
+  });
+  const failUpdateData = await failUpdateRes.json();
+  assert.strictEqual(failUpdateData.group.status, "ERROR");
+  assert.strictEqual(failUpdateData.group.lastProcessedMessageTimestamp, savedCursorBeforeError);
+  assert.strictEqual(failUpdateData.group.lastError, "Network failure parsing message attachment");
+  console.log("✓ Test 25 passed: Cursor correctly held at last successful item upon error");
+
+  // ---------------------------------------------------------------------------
+  // Test 26: Full Collector Status API Aggregation (GET /api/collector/status)
+  // ---------------------------------------------------------------------------
+  const statusSummaryRes = await getCollectorStatusApi();
+  assert.strictEqual(statusSummaryRes.status, 200);
+  const statusSummaryData = await statusSummaryRes.json();
+  assert.ok(statusSummaryData.whatsappStatus);
+  assert.ok(Array.isArray(statusSummaryData.groups));
+  assert.ok(statusSummaryData.groups.length >= 2);
+  assert.ok(Array.isArray(statusSummaryData.recentScans));
+  assert.ok(statusSummaryData.nextScan, "Next scan schedule timestamp must be calculated");
+  assert.ok(statusSummaryData.groupsDiscovered >= 2);
+  console.log("✓ Test 26 passed: Complete collector status reporting with 2-hour schedule metrics verified");
+
   console.log("\n============================================================");
-  console.log("ALL 15 PHASE 4A COLLECTOR TESTS PASSED CLEANLY! 🎉");
+  console.log("ALL 26 PHASE 4A/4B COLLECTOR TESTS PASSED CLEANLY! 🎉");
   console.log("============================================================\n");
 }
 

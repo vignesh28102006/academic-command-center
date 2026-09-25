@@ -108,3 +108,39 @@ export interface ParseResult {
   reason?: string;
   confidence?: "HIGH" | "MEDIUM" | "NEEDS_CONFIRMATION";
 }
+
+export interface CollectorGroupState {
+  id: string;
+  groupName: string;
+  groupIdentifier: string;
+  firstBackfillDate: string;
+  lastProcessedMessageTimestamp?: string | null;
+  lastProcessedMessageId?: string | null;
+  lastScanTime?: string | null;
+  lastSuccessfulScanTime?: string | null;
+  backfillComplete: boolean;
+  status: "IDLE" | "DISCOVERING_GROUPS" | "BACKFILLING" | "MONITORING" | "SCANNING" | "PAUSED" | "ERROR" | "WHATSAPP_UNAVAILABLE";
+  messagesScanned: number;
+  messagesProcessed: number;
+  messagesIgnored: number;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CollectorScanHistory {
+  id: string;
+  startedAt: string;
+  completedAt?: string | null;
+  status: "IN_PROGRESS" | "COMPLETED" | "FAILED";
+  groupsDiscovered: number;
+  groupsCompleted: number;
+  groupsFailed: number;
+  messagesScanned: number;
+  messagesProcessed: number;
+  messagesIgnored: number;
+  eventsCreated: number;
+  eventsUpdated: number;
+  error?: string | null;
+  createdAt: string;
+}

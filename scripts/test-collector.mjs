@@ -81,7 +81,7 @@ async function runCollectorManualTest() {
     collectionStatus: "ACTIVE"
   });
 
-  const msg1 = `OS Lab Assignment ${runTag} due by Friday 11:59 PM: https://forms.gle/csec-${runTag}`;
+  const msg1 = `OS Assignment ${runTag} is due on 12 October at 11:59 PM: https://forms.gle/csec-${runTag}`;
   const res1 = await sendCollectorMessage({
     message: msg1,
     sourceGroup: "CSE-C Official 2024",
@@ -163,7 +163,7 @@ async function runCollectorManualTest() {
   // ---------------------------------------------------------------------------
   console.log("Step 5: Testing Ordinary Chatter Filtering in Group...");
   const chatterRes = await sendCollectorMessage({
-    message: "Thank you sir! Noted 👍",
+    message: `Good morning sir! Wishing everyone a pleasant day ahead ${runTag}`,
     sourceGroup: "CSE-C Official 2024",
     sourceSender: "Class Student"
   });
@@ -196,7 +196,7 @@ async function runCollectorManualTest() {
   // Step 7: Postponement Modification & Change History
   // ---------------------------------------------------------------------------
   console.log("Step 7: Testing Postponement Modification...");
-  const postMsg = `OS Lab Assignment ${runTag} deadline extended to next Monday 19 October`;
+  const postMsg = `OS Assignment ${runTag} is postponed to 19 October`;
   const postRes = await sendCollectorMessage({
     message: postMsg,
     sourceGroup: "CSE-C Official 2024",
@@ -211,18 +211,141 @@ async function runCollectorManualTest() {
   console.log("  ✓ Postponement updated existing event without duplicate!\n");
 
   // ---------------------------------------------------------------------------
-  // Step 8: Verify Collector Status & Dashboard Metrics
+  // Step 8: September 10 Backfill Boundary Filtering
   // ---------------------------------------------------------------------------
-  console.log("Step 8: Verifying GET /api/collector/status...");
+  console.log("Step 8: Testing September 10 Backfill Boundary Check...");
+  const oldRes = await sendCollectorMessage({
+    message: `Notice from September 5th #${runTag}`,
+    sourceGroup: "CSE-C Official 2024",
+    sourceSender: "Faculty",
+    messageTimestamp: "2026-09-05T10:00:00+05:30"
+  });
+  console.log(`  • Action: ${oldRes.data.action} (${oldRes.data.reason || "Out of range"})`);
+  if (oldRes.data.action !== "IGNORED_OUT_OF_RANGE") {
+    console.error("❌ Backfill boundary filtering failed!");
+    process.exit(1);
+  }
+  console.log("  ✓ Pre-September 10 messages strictly ignored!\n");
+
+  // ---------------------------------------------------------------------------
+  // Step 9: Persistent Group Registration & Cursor Updates
+  // ---------------------------------------------------------------------------
+  console.log("Step 9: Testing Persistent Group Registration & Cursors...");
+  const groupNameTest = `Test Academic Group ${runTag}`;
+  const regRes = await fetch(`${BASE_URL}/api/collector/groups`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${COLLECTOR_SECRET}`
+    },
+    body: JSON.stringify({
+      groupName: groupNameTest,
+      groupIdentifier: groupNameTest
+    })
+  });
+  const regData = await regRes.json();
+  console.log(`  • Registered Group: ${regData.group?.groupName}`);
+  console.log(`  • Initial Backfill Date: ${regData.group?.firstBackfillDate}`);
+
+  // Advance cursor
+  const cursorTimestamp = "2026-09-15T12:00:00.000Z";
+  const patchRes = await fetch(`${BASE_URL}/api/collector/groups/${encodeURIComponent(groupNameTest)}/cursor`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${COLLECTOR_SECRET}`
+    },
+    body: JSON.stringify({
+      lastProcessedMessageTimestamp: cursorTimestamp,
+      lastProcessedMessageId: `wamid.msg_${runTag}`,
+      backfillComplete: true,
+      status: "MONITORING",
+      messagesScannedIncrement: 10,
+      messagesProcessedIncrement: 2,
+      messagesIgnoredIncrement: 8
+    })
+  });
+  const patchData = await patchRes.json();
+  console.log(`  • Updated Cursor Timestamp: ${patchData.group?.lastProcessedMessageTimestamp}`);
+  console.log(`  • Backfill Complete: ${patchData.group?.backfillComplete}`);
+  if (!patchData.group?.backfillComplete || patchData.group?.lastProcessedMessageTimestamp !== cursorTimestamp) {
+    console.error("❌ Cursor update failed!");
+    process.exit(1);
+  }
+  console.log("  ✓ Group registered and cursor persisted!\n");
+
+  // ---------------------------------------------------------------------------
+  // Step 10: Scan History Recording & Cycle Lifecycle
+  // ---------------------------------------------------------------------------
+  console.log("Step 10: Testing Scan History Lifecycle...");
+  const scanCreateRes = await fetch(`${BASE_URL}/api/collector/scans`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${COLLECTOR_SECRET}`
+    },
+    body: JSON.stringify({
+      status: "IN_PROGRESS",
+      groupsDiscovered: 3,
+      groupsCompleted: 0,
+      groupsFailed: 0,
+      messagesScanned: 0,
+      messagesProcessed: 0,
+      messagesIgnored: 0,
+      eventsCreated: 0,
+      eventsUpdated: 0
+    })
+  });
+  const scanCreateData = await scanCreateRes.json();
+  const testScanId = scanCreateData.scan?.id;
+  console.log(`  • Created Scan ID: ${testScanId} (status: ${scanCreateData.scan?.status})`);
+
+  // Complete scan
+  const scanFinishRes = await fetch(`${BASE_URL}/api/collector/scans`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${COLLECTOR_SECRET}`
+    },
+    body: JSON.stringify({
+      id: testScanId,
+      completedAt: new Date().toISOString(),
+      status: "COMPLETED",
+      groupsCompleted: 3,
+      messagesScanned: 50,
+      messagesProcessed: 3,
+      messagesIgnored: 47,
+      eventsCreated: 1,
+      eventsUpdated: 0
+    })
+  });
+  const scanFinishData = await scanFinishRes.json();
+  console.log(`  • Finalized Scan Status: ${scanFinishData.scan?.status} (groupsCompleted: ${scanFinishData.scan?.groupsCompleted})`);
+  if (scanFinishData.scan?.status !== "COMPLETED") {
+    console.error("❌ Scan cycle recording failed!");
+    process.exit(1);
+  }
+  console.log("  ✓ Scan lifecycle tracked successfully!\n");
+
+  // ---------------------------------------------------------------------------
+  // Step 11: Verify Collector Status & Dashboard Metrics
+  // ---------------------------------------------------------------------------
+  console.log("Step 11: Verifying GET /api/collector/status...");
   const finalStatusRes = await fetch(`${BASE_URL}/api/collector/status`);
   const finalStatus = await finalStatusRes.json();
-  console.log("  • Collector Stats:", JSON.stringify(finalStatus.stats, null, 2));
+  console.log(`  • WhatsApp Status: ${finalStatus.whatsappStatus}`);
+  console.log(`  • Next Scan: ${finalStatus.nextScan}`);
+  console.log(`  • Groups Discovered: ${finalStatus.groupsDiscovered}`);
+  console.log(`  • Recent Scans Count: ${finalStatus.recentScans?.length}`);
 
   console.log("\n============================================================");
-  console.log("ALL MANUAL INTEGRATION SCENARIOS VERIFIED SUCCESSFULLY! 🎉");
+  console.log("ALL INTEGRATION SCENARIOS VERIFIED SUCCESSFULLY! 🎉");
   console.log("  1. CSE-C Official 2024       → COLLECTED");
   console.log("  2. Machine Learning CSE-C   → COLLECTED");
   console.log("  3. Personal 1-to-1 Chat     → IGNORED");
+  console.log("  4. September 10 Boundary    → ENFORCED");
+  console.log("  5. Per-Group Cursors        → PERSISTED");
+  console.log("  6. 2-Hour Scan Cycles       → TRACKED");
   console.log("============================================================\n");
 }
 

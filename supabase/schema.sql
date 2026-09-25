@@ -91,9 +91,56 @@ CREATE INDEX IF NOT EXISTS idx_subject_mappings_course_code ON subject_mappings(
 -- Pre-seed standard course codes
 INSERT INTO subject_mappings (course_code, subject_name) VALUES
     ('19CSE312', 'NLP'),
+    ('NLP 2026 BATCH', 'NLP'),
+    ('NLP 2026', 'NLP'),
+    ('23CSE351', 'FoDS'),
+    ('23CSE351 FODS G1', 'FoDS'),
     ('CS301', 'OS'),
     ('CS302', 'DBMS'),
     ('CS303', 'CN'),
     ('CS304', 'AI'),
     ('MAT201', 'Mathematics')
 ON CONFLICT (course_code) DO NOTHING;
+
+-- 5. Collector Group State Table (Persistent Per-Group Cursors & Backfill Status)
+CREATE TABLE IF NOT EXISTS collector_group_state (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    group_name TEXT NOT NULL,
+    group_identifier TEXT NOT NULL UNIQUE,
+    first_backfill_date TIMESTAMPTZ NOT NULL DEFAULT '2026-09-10T00:00:00+05:30',
+    last_processed_message_timestamp TIMESTAMPTZ,
+    last_processed_message_id TEXT,
+    last_scan_time TIMESTAMPTZ,
+    last_successful_scan_time TIMESTAMPTZ,
+    backfill_complete BOOLEAN NOT NULL DEFAULT FALSE,
+    status TEXT NOT NULL DEFAULT 'IDLE',
+    messages_scanned INTEGER NOT NULL DEFAULT 0,
+    messages_processed INTEGER NOT NULL DEFAULT 0,
+    messages_ignored INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collector_group_identifier ON collector_group_state(group_identifier);
+CREATE INDEX IF NOT EXISTS idx_collector_group_status ON collector_group_state(status);
+
+-- 6. Collector Scan History Table (Track 2-Hour Scan Cycles & Metrics)
+CREATE TABLE IF NOT EXISTS collector_scan_history (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'IN_PROGRESS',
+    groups_discovered INTEGER NOT NULL DEFAULT 0,
+    groups_completed INTEGER NOT NULL DEFAULT 0,
+    groups_failed INTEGER NOT NULL DEFAULT 0,
+    messages_scanned INTEGER NOT NULL DEFAULT 0,
+    messages_processed INTEGER NOT NULL DEFAULT 0,
+    messages_ignored INTEGER NOT NULL DEFAULT 0,
+    events_created INTEGER NOT NULL DEFAULT 0,
+    events_updated INTEGER NOT NULL DEFAULT 0,
+    error TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_collector_scan_history_started ON collector_scan_history(started_at DESC);

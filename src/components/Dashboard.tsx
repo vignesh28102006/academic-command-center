@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { AcademicItem, AcademicStatus, AcademicType, ChangeRecord, CollectorStats } from "@/lib/types";
+import { AcademicItem, AcademicStatus, AcademicType, ChangeRecord, CollectorStats, CollectorGroupState, CollectorScanHistory } from "@/lib/types";
 import {
   formatCalendarDate,
   formatDeadlineDisplay,
@@ -470,6 +470,32 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, []);
 
+  interface FullCollectorStatus {
+    status: string;
+    stats: CollectorStats;
+    whatsappStatus: "CONNECTED" | "UNAVAILABLE";
+    lastHeartbeatAt: string | null;
+    lastScan: {
+      id: string;
+      startedAt: string;
+      completedAt: string | null;
+      status: string;
+      durationSeconds: number | null;
+    } | null;
+    nextScan: string;
+    groupsDiscovered: number;
+    groupsCompleted: number;
+    groupsFailed: number;
+    messagesScanned: number;
+    messagesProcessed: number;
+    messagesIgnored: number;
+    eventsCreated: number;
+    eventsUpdated: number;
+    groups: CollectorGroupState[];
+    recentScans: CollectorScanHistory[];
+  }
+
+  const [collectorData, setCollectorData] = useState<FullCollectorStatus | null>(null);
   const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
   const [collectorPanelOpen, setCollectorPanelOpen] = useState(true);
 
@@ -478,6 +504,7 @@ export default function Dashboard() {
       const res = await fetch("/api/collector/status");
       if (res.ok) {
         const data = await res.json();
+        setCollectorData(data);
         if (data?.stats) {
           setCollectorStats(data.stats);
         }
@@ -602,31 +629,53 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* Collector Status Panel (Phase 4A) */}
+      {/* Collector Status Panel (Phase 4A/4B) */}
       <section
         style={{
           background: "#f8fafc",
           border: "1px solid #e2e8f0",
           borderRadius: 16,
-          padding: "16px 20px",
+          padding: "18px 20px",
           marginBottom: 20,
           boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
         }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: collectorPanelOpen ? 14 : 0 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 8px #22c55e" }} />
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: collectorPanelOpen ? 16 : 0, flexWrap: "wrap", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <div
+              style={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                background: collectorData?.whatsappStatus === "CONNECTED" ? "#22c55e" : "#f59e0b",
+                boxShadow: collectorData?.whatsappStatus === "CONNECTED" ? "0 0 8px #22c55e" : "0 0 8px #f59e0b"
+              }}
+            />
             <Radio size={16} color="#0f766e" />
-            <span style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>WhatsApp Web Collector Status</span>
-            <span style={{
-              fontSize: 11,
-              fontWeight: 700,
-              padding: "2px 8px",
-              borderRadius: 12,
-              background: collectorStats?.endpointStatus === "CONFIGURED" ? "#dcfce7" : "#fef3c7",
-              color: collectorStats?.endpointStatus === "CONFIGURED" ? "#15803d" : "#b45309"
-            }}>
-              {collectorStats?.endpointStatus === "CONFIGURED" ? "Endpoint Ready" : "Awaiting Secret"}
+            <span style={{ fontWeight: 800, fontSize: 15, color: "#0f172a" }}>WhatsApp Web Collector</span>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 700,
+                padding: "2px 8px",
+                borderRadius: 12,
+                background: collectorData?.whatsappStatus === "CONNECTED" ? "#dcfce7" : "#fef3c7",
+                color: collectorData?.whatsappStatus === "CONNECTED" ? "#15803d" : "#b45309"
+              }}
+            >
+              {collectorData?.whatsappStatus === "CONNECTED" ? "CONNECTED" : "UNAVAILABLE"}
+            </span>
+            <span
+              style={{
+                fontSize: 11,
+                fontWeight: 600,
+                padding: "2px 8px",
+                borderRadius: 12,
+                background: "#f1f5f9",
+                color: "#475569"
+              }}
+            >
+              2-Hour Scan Cycle
             </span>
           </div>
 
@@ -664,122 +713,293 @@ export default function Dashboard() {
         </div>
 
         {collectorPanelOpen && (
-          <div>
-            {/* Live Chat Context Bar */}
-            <div style={{
-              background: "#ffffff",
-              border: "1px solid #e2e8f0",
-              borderRadius: 12,
-              padding: "12px 16px",
-              marginBottom: 14,
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: 12
-            }}>
-              <div>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                  Current Group
-                </div>
-                <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a" }}>
-                  {collectorStats?.currentGroup || "None (Waiting for group)"}
-                </div>
-              </div>
-
-              <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-                <div>
-                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Chat Type</div>
-                  <span style={{
-                    fontSize: 12,
-                    fontWeight: 700,
-                    padding: "3px 8px",
-                    borderRadius: 6,
-                    background: collectorStats?.chatType === "GROUP" ? "#dbeafe" : "#f1f5f9",
-                    color: collectorStats?.chatType === "GROUP" ? "#1e40af" : "#64748b"
-                  }}>
-                    {collectorStats?.chatType || "GROUP"}
-                  </span>
-                </div>
-
-                <div>
-                  <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Collection</div>
-                  <span style={{
-                    fontSize: 12,
-                    fontWeight: 700,
-                    padding: "3px 8px",
-                    borderRadius: 6,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 5,
-                    background: collectorStats?.collectionStatus === "ACTIVE" || (!collectorStats?.collectionStatus && collectorStats?.currentGroup) ? "#dcfce7" : "#f1f5f9",
-                    color: collectorStats?.collectionStatus === "ACTIVE" || (!collectorStats?.collectionStatus && collectorStats?.currentGroup) ? "#15803d" : "#64748b"
-                  }}>
-                    <span style={{
-                      width: 6,
-                      height: 6,
-                      borderRadius: "50%",
-                      background: collectorStats?.collectionStatus === "ACTIVE" || (!collectorStats?.collectionStatus && collectorStats?.currentGroup) ? "#22c55e" : "#94a3b8"
-                    }} />
-                    {collectorStats?.collectionStatus || (collectorStats?.currentGroup ? "ACTIVE" : "IDLE")}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
+          <div style={{ display: "grid", gap: 14 }}>
+            {/* Top Metrics Row: Schedule & Aggregates */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 10 }}>
               <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Messages Received</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a" }}>{collectorStats?.totalReceived ?? 0}</div>
-              </div>
-              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Filtered Chatter</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: "#64748b" }}>{collectorStats?.nonAcademic ?? 0}</div>
-              </div>
-              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Duplicates Ignored</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: "#eab308" }}>{collectorStats?.duplicate ?? 0}</div>
-              </div>
-              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Events Created</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: "#16a34a" }}>{collectorStats?.eventsCreated ?? 0}</div>
-              </div>
-              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
-                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Events Updated</div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: "#2563eb" }}>{collectorStats?.eventsUpdated ?? 0}</div>
-              </div>
-            </div>
-
-            <div style={{ background: "#ffffff", padding: "10px 14px", borderRadius: 10, border: "1px solid #e2e8f0", fontSize: 12, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-              <div>
-                <span style={{ color: "#64748b", fontWeight: 600 }}>Endpoint: </span>
-                <code style={{ background: "#f1f5f9", padding: "2px 6px", borderRadius: 4, color: "#0f172a" }}>POST /api/collector/messages</code>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", fontWeight: 600 }}>Last Received: </span>
-                <span style={{ color: "#0f172a" }}>
-                  {collectorStats?.lastReceivedAt ? new Date(collectorStats.lastReceivedAt).toLocaleTimeString() : "No messages yet"}
-                </span>
-              </div>
-              <div>
-                <span style={{ color: "#64748b", fontWeight: 600 }}>Last Result: </span>
-                <span style={{
-                  fontWeight: 700,
-                  color: collectorStats?.lastResult === "CREATED" ? "#16a34a" :
-                         collectorStats?.lastResult === "UPDATED" ? "#2563eb" :
-                         collectorStats?.lastResult === "IGNORED_DUPLICATE" ? "#eab308" :
-                         collectorStats?.lastResult === "NON_ACADEMIC" ? "#64748b" : "#94a3b8"
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>WhatsApp Web</div>
+                <div style={{
+                  fontSize: 14,
+                  fontWeight: 800,
+                  marginTop: 4,
+                  color: collectorData?.whatsappStatus === "CONNECTED" ? "#16a34a" : "#d97706"
                 }}>
-                  {collectorStats?.lastResult || "Idle"}
+                  {collectorData?.whatsappStatus === "CONNECTED" ? "● Connected" : "○ Unavailable"}
+                </div>
+                <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>Keep Web Tab Open</div>
+              </div>
+
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Last Scan</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", marginTop: 4 }}>
+                  {collectorData?.lastScan?.startedAt
+                    ? new Date(collectorData.lastScan.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                    : "No scans yet"}
+                </div>
+                <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+                  {collectorData?.lastScan?.durationSeconds !== null && collectorData?.lastScan?.durationSeconds !== undefined
+                    ? `Duration: ${collectorData.lastScan.durationSeconds}s`
+                    : "Idle"}
+                </div>
+              </div>
+
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Next Scheduled Scan</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#2563eb", marginTop: 4 }}>
+                  {collectorData?.nextScan
+                    ? new Date(collectorData.nextScan).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                    : "Every 2 Hours"}
+                </div>
+                <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>2-hour recurring</div>
+              </div>
+
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Groups (Disc / Done)</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+                  {collectorData?.groupsDiscovered ?? 0}
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#16a34a", marginLeft: 4 }}>
+                    ({collectorData?.groupsCompleted ?? 0} backfilled)
+                  </span>
+                </div>
+                {Boolean(collectorData?.groupsFailed) && (
+                  <div style={{ fontSize: 10, color: "#dc2626", marginTop: 2 }}>
+                    {collectorData?.groupsFailed} failed
+                  </div>
+                )}
+              </div>
+
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Messages (Scan / Proc)</div>
+                <div style={{ fontSize: 16, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+                  {collectorData?.messagesScanned ?? 0}
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#2563eb", marginLeft: 4 }}>
+                    ({collectorData?.messagesProcessed ?? 0} proc)
+                  </span>
+                </div>
+                <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
+                  {collectorData?.messagesIgnored ?? 0} ignored / dup
+                </div>
+              </div>
+            </div>
+
+            {/* Current Context Row */}
+            <div
+              style={{
+                background: "#ffffff",
+                border: "1px solid #e2e8f0",
+                borderRadius: 12,
+                padding: "10px 14px",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: 10,
+                fontSize: 12
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+                <div>
+                  <span style={{ color: "#64748b", fontWeight: 600 }}>Active Chat: </span>
+                  <span style={{ fontWeight: 700, color: "#0f172a" }}>
+                    {collectorStats?.currentGroup || "None (Waiting for group selection)"}
+                  </span>
+                </div>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "1px 6px",
+                  borderRadius: 4,
+                  background: collectorStats?.chatType === "GROUP" ? "#dbeafe" : "#f1f5f9",
+                  color: collectorStats?.chatType === "GROUP" ? "#1e40af" : "#64748b"
+                }}>
+                  {collectorStats?.chatType || "GROUP"}
+                </span>
+                <span style={{
+                  fontSize: 11,
+                  fontWeight: 700,
+                  padding: "1px 6px",
+                  borderRadius: 4,
+                  background: collectorStats?.collectionStatus === "ACTIVE" ? "#dcfce7" : "#f1f5f9",
+                  color: collectorStats?.collectionStatus === "ACTIVE" ? "#15803d" : "#64748b"
+                }}>
+                  Status: {collectorStats?.collectionStatus || "IDLE"}
                 </span>
               </div>
-              {collectorStats?.lastProcessedMessage && (
-                <div style={{ width: "100%", borderTop: "1px dashed #e2e8f0", paddingTop: 8, color: "#475569" }}>
-                  <span style={{ color: "#64748b", fontWeight: 600 }}>Last Processed: </span>
-                  <span style={{ fontStyle: "italic" }}>"{collectorStats.lastProcessedMessage}"</span>
+
+              <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+                <div>
+                  <span style={{ color: "#64748b", fontWeight: 600 }}>Events Generated: </span>
+                  <span style={{ fontWeight: 700, color: "#16a34a" }}>+{collectorStats?.eventsCreated ?? 0}</span>
+                  <span style={{ color: "#64748b", margin: "0 4px" }}>/</span>
+                  <span style={{ fontWeight: 700, color: "#2563eb" }}>~{collectorStats?.eventsUpdated ?? 0}</span>
                 </div>
+                <div>
+                  <span style={{ color: "#64748b", fontWeight: 600 }}>Last Result: </span>
+                  <span style={{
+                    fontWeight: 700,
+                    color: collectorStats?.lastResult === "CREATED" ? "#16a34a" :
+                           collectorStats?.lastResult === "UPDATED" ? "#2563eb" :
+                           collectorStats?.lastResult === "IGNORED_DUPLICATE" ? "#eab308" :
+                           collectorStats?.lastResult === "NON_ACADEMIC" ? "#64748b" : "#94a3b8"
+                  }}>
+                    {collectorStats?.lastResult || "Idle"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Per-Group Status Table (Requirement 24) */}
+            <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px", overflowX: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                  Discovered WhatsApp Groups & Cursors
+                </span>
+                <span style={{ fontSize: 11, color: "#64748b" }}>
+                  Initial backfill boundary: <strong>2026-09-10</strong>
+                </span>
+              </div>
+
+              {!collectorData?.groups || collectorData.groups.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "16px", color: "#64748b", fontSize: 12 }}>
+                  No WhatsApp groups registered yet. Ensure WhatsApp Web is open with the collector userscript enabled.
+                </div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid #e2e8f0", color: "#64748b", textTransform: "uppercase", fontSize: 11 }}>
+                      <th style={{ padding: "6px 8px" }}>Group</th>
+                      <th style={{ padding: "6px 8px" }}>Backfill</th>
+                      <th style={{ padding: "6px 8px" }}>From</th>
+                      <th style={{ padding: "6px 8px" }}>Last Processed</th>
+                      <th style={{ padding: "6px 8px" }}>Last Scan</th>
+                      <th style={{ padding: "6px 8px" }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {collectorData.groups.map(g => (
+                      <tr key={g.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                        <td style={{ padding: "8px 8px", fontWeight: 700, color: "#0f172a" }}>
+                          {g.groupName}
+                        </td>
+                        <td style={{ padding: "8px 8px" }}>
+                          <span style={{
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            background: g.backfillComplete ? "#dcfce7" : (g.status === "BACKFILLING" ? "#fef3c7" : "#f1f5f9"),
+                            color: g.backfillComplete ? "#15803d" : (g.status === "BACKFILLING" ? "#b45309" : "#64748b")
+                          }}>
+                            {g.backfillComplete ? "COMPLETED" : (g.status === "BACKFILLING" ? "IN PROGRESS" : "PENDING")}
+                          </span>
+                        </td>
+                        <td style={{ padding: "8px 8px", color: "#64748b", fontFamily: "monospace", fontSize: 11 }}>
+                          {g.firstBackfillDate || "2026-09-10"}
+                        </td>
+                        <td style={{ padding: "8px 8px", color: "#334155" }}>
+                          {g.lastProcessedMessageTimestamp
+                            ? new Date(g.lastProcessedMessageTimestamp).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
+                            : "None yet"}
+                        </td>
+                        <td style={{ padding: "8px 8px", color: "#64748b" }}>
+                          {g.lastScanTime
+                            ? new Date(g.lastScanTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                            : "Never"}
+                        </td>
+                        <td style={{ padding: "8px 8px" }}>
+                          <span style={{
+                            padding: "2px 6px",
+                            borderRadius: 4,
+                            fontSize: 10,
+                            fontWeight: 700,
+                            background: g.status === "SCANNING" || g.status === "BACKFILLING" ? "#dbeafe" :
+                                        g.status === "ERROR" ? "#fee2e2" : "#f1f5f9",
+                            color: g.status === "SCANNING" || g.status === "BACKFILLING" ? "#1e40af" :
+                                   g.status === "ERROR" ? "#b91c1c" : "#475569"
+                          }}>
+                            {g.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               )}
             </div>
+
+            {/* Scan History Table (Last 10 Scans) */}
+            {collectorData?.recentScans && collectorData.recentScans.length > 0 && (
+              <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px", overflowX: "auto" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                    Recent Scan Cycles (Last 10)
+                  </span>
+                  <span style={{ fontSize: 11, color: "#64748b" }}>
+                    Automated 2-hour backfill and incremental scans
+                  </span>
+                </div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid #e2e8f0", color: "#64748b", textTransform: "uppercase", fontSize: 11 }}>
+                      <th style={{ padding: "6px 8px" }}>Scan ID</th>
+                      <th style={{ padding: "6px 8px" }}>Start Time</th>
+                      <th style={{ padding: "6px 8px" }}>End Time</th>
+                      <th style={{ padding: "6px 8px" }}>Duration</th>
+                      <th style={{ padding: "6px 8px" }}>Groups Scanned</th>
+                      <th style={{ padding: "6px 8px" }}>Messages Scanned</th>
+                      <th style={{ padding: "6px 8px" }}>Events Created</th>
+                      <th style={{ padding: "6px 8px" }}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {collectorData.recentScans.map(s => {
+                      const dur = s.completedAt
+                        ? Math.round((new Date(s.completedAt).getTime() - new Date(s.startedAt).getTime()) / 1000)
+                        : null;
+                      return (
+                        <tr key={s.id} style={{ borderBottom: "1px solid #f1f5f9" }}>
+                          <td style={{ padding: "8px 8px", fontFamily: "monospace", fontSize: 11, color: "#64748b" }}>
+                            {s.id.slice(0, 8)}
+                          </td>
+                          <td style={{ padding: "8px 8px", color: "#334155" }}>
+                            {new Date(s.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                          </td>
+                          <td style={{ padding: "8px 8px", color: "#334155" }}>
+                            {s.completedAt
+                              ? new Date(s.completedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                              : "In Progress..."}
+                          </td>
+                          <td style={{ padding: "8px 8px", color: "#64748b" }}>
+                            {dur !== null ? `${dur}s` : "-"}
+                          </td>
+                          <td style={{ padding: "8px 8px", color: "#0f172a", fontWeight: 600 }}>
+                            {s.groupsCompleted} / {s.groupsDiscovered}
+                          </td>
+                          <td style={{ padding: "8px 8px", color: "#0f172a" }}>
+                            {s.messagesScanned} <span style={{ color: "#64748b", fontSize: 11 }}>({s.messagesProcessed} proc)</span>
+                          </td>
+                          <td style={{ padding: "8px 8px", color: "#16a34a", fontWeight: 700 }}>
+                            +{s.eventsCreated}
+                          </td>
+                          <td style={{ padding: "8px 8px" }}>
+                            <span style={{
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              fontSize: 10,
+                              fontWeight: 700,
+                              background: s.status === "COMPLETED" ? "#dcfce7" : (s.status === "IN_PROGRESS" ? "#dbeafe" : "#fee2e2"),
+                              color: s.status === "COMPLETED" ? "#15803d" : (s.status === "IN_PROGRESS" ? "#1e40af" : "#b91c1c")
+                            }}>
+                              {s.status}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         )}
       </section>

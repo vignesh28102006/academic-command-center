@@ -66,7 +66,7 @@ export async function processAcademicMessagePipeline(
     rawMessage,
     existingEvents,
     {
-      sourceGroup: mappedSubject || sourceGroup,
+      sourceGroup,
       sourceSender,
       timezone: "Asia/Kolkata"
     }

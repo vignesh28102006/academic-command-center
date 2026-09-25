@@ -3,6 +3,11 @@ import { SubjectMappingRecord } from "../types";
 
 const defaultMappings: Record<string, string> = {
   "19CSE312": "NLP",
+  "NLP 2026 BATCH": "NLP",
+  "NLP 2026": "NLP",
+  "23CSE351": "FoDS",
+  "23CSE351 FODS G1": "FoDS",
+  "FODS": "FoDS",
   "CS301": "OS",
   "CS302": "DBMS",
   "CS303": "CN",

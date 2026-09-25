@@ -12,6 +12,15 @@ import {
 /**
  * Match a message against existing items based on title tokens, snippet, and subject.
  */
+function numbersDiffer(a: string, b: string): boolean {
+  const numA = a.match(/\b\d+\b/g);
+  const numB = b.match(/\b\d+\b/g);
+  if (numA && numB) {
+    return numA.join(",") !== numB.join(",");
+  }
+  return false;
+}
+
 export function findMatchingItem(
   title: string | null | undefined,
   targetSnippet: string | null | undefined,
@@ -25,7 +34,11 @@ export function findMatchingItem(
   if (normSnippet) {
     const matched = existingItems.find(item => {
       const itemTitle = item.title.toLowerCase();
-      return itemTitle.includes(normSnippet) || normSnippet.includes(itemTitle);
+      if (numbersDiffer(itemTitle, normSnippet)) return false;
+      return itemTitle === normSnippet ||
+             itemTitle.includes(normSnippet) ||
+             new RegExp(`\\b${normSnippet.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(itemTitle) ||
+             new RegExp(`\\b${itemTitle.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(normSnippet);
     });
     if (matched) return matched;
   }
@@ -34,9 +47,10 @@ export function findMatchingItem(
   if (normTitle) {
     const directMatch = existingItems.find(item => {
       const itemTitle = item.title.toLowerCase();
+      if (numbersDiffer(itemTitle, normTitle)) return false;
       return itemTitle === normTitle ||
-             itemTitle.includes(normTitle) ||
-             normTitle.includes(itemTitle);
+             new RegExp(`\\b${normTitle.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(itemTitle) ||
+             new RegExp(`\\b${itemTitle.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(normTitle);
     });
     if (directMatch) return directMatch;
 
@@ -44,7 +58,9 @@ export function findMatchingItem(
     const tokens = normTitle.split(/\s+/).filter(w => w.length > 2);
     if (tokens.length >= 2) {
       const tokenMatch = existingItems.find(item => {
-        const itemTokens = item.title.toLowerCase().split(/\s+/);
+        const itemTitle = item.title.toLowerCase();
+        if (numbersDiffer(itemTitle, normTitle)) return false;
+        const itemTokens = itemTitle.split(/\s+/);
         const matches = tokens.filter(t => itemTokens.includes(t));
         return matches.length >= 2;
       });

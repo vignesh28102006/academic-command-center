@@ -291,3 +291,122 @@ export function formatDeadlineDisplay(deadlineIso?: string, referenceDate: Date 
   }
   return `${formatCalendarDate(dateStr)} · ${timeFormatted}`;
 }
+
+export const BACKFILL_BOUNDARY_DATE = "2026-09-10T00:00:00+05:30";
+
+/**
+ * Parse WhatsApp Web timestamp format e.g. "[11:35 am, 25/09/2026]" or "25/09/2026, 11:35 am"
+ * into a standardized ISO 8601 string.
+ */
+export function parseWhatsAppMessageTimestamp(rawText: string): string {
+  if (!rawText) return new Date().toISOString();
+  const trimmed = rawText.trim();
+
+  // If already standard ISO representation
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(trimmed)) {
+    const d = new Date(trimmed);
+    if (!isNaN(d.getTime())) return d.toISOString();
+  }
+
+  // Format 1: [11:35 am, 25/09/2026] or [25/09/2026, 11:35 am]
+  let p1 = "";
+  let p2 = "";
+
+  const bracketMatch = trimmed.match(/\[\s*(.*?)\s*,\s*(.*?)\s*\]/);
+  if (bracketMatch) {
+    p1 = bracketMatch[1].trim();
+    p2 = bracketMatch[2].trim();
+  } else if (trimmed.includes(",")) {
+    const parts = trimmed.split(",");
+    p1 = parts[0].trim();
+    p2 = parts.slice(1).join(",").trim();
+  }
+
+  if (p1 && p2) {
+    let datePart = p1;
+    let timePart = p2;
+
+    // Check which one is the date (contains / or - or 4 digits)
+    if (!/\d{1,4}[/-]\d{1,2}[/-]\d{2,4}/.test(datePart) && /\d{1,4}[/-]\d{1,2}[/-]\d{2,4}/.test(timePart)) {
+      datePart = p2;
+      timePart = p1;
+    }
+
+    // Parse datePart (DD/MM/YYYY or MM/DD/YYYY or YYYY-MM-DD)
+    let year = 2026;
+    let month = 9;
+    let day = 10;
+
+    const dmyMatch = datePart.match(/(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})/);
+    if (dmyMatch) {
+      day = parseInt(dmyMatch[1], 10);
+      month = parseInt(dmyMatch[2], 10);
+      let y = parseInt(dmyMatch[3], 10);
+      year = y < 100 ? 2000 + y : y;
+    }
+
+    // Parse timePart (HH:MM or HH:MM:SS with optional am/pm)
+    let hours = 0;
+    let minutes = 0;
+    let seconds = 0;
+
+    const timeMatch = timePart.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?/i);
+    if (timeMatch) {
+      hours = parseInt(timeMatch[1], 10);
+      minutes = parseInt(timeMatch[2], 10);
+      if (timeMatch[3]) seconds = parseInt(timeMatch[3], 10);
+      const meridian = timeMatch[4]?.toLowerCase();
+      if (meridian === "pm" && hours < 12) hours += 12;
+      if (meridian === "am" && hours === 12) hours = 0;
+    }
+
+    // Format ISO string in Asia/Kolkata (+05:30)
+    const isoString = `${year}-${pad2(month)}-${pad2(day)}T${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}+05:30`;
+    const parsedDate = new Date(isoString);
+    if (!isNaN(parsedDate.getTime())) {
+      return parsedDate.toISOString();
+    }
+  }
+
+  // Fallback: Date.parse
+  const direct = new Date(trimmed);
+  if (!isNaN(direct.getTime())) {
+    return direct.toISOString();
+  }
+
+  return new Date().toISOString();
+}
+
+/**
+ * Returns true if message was sent on or after the September 10, 2026 backfill boundary.
+ */
+export function isMessageEligibleForBackfill(
+  timestampStr: string,
+  boundaryIso: string = BACKFILL_BOUNDARY_DATE
+): boolean {
+  try {
+    const msgTime = new Date(timestampStr).getTime();
+    const boundaryTime = new Date(boundaryIso).getTime();
+    return msgTime >= boundaryTime;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Returns true if message is strictly newer than the group's current saved cursor.
+ */
+export function isMessageNewerThanCursor(
+  timestampStr: string,
+  cursorTimestamp?: string | null
+): boolean {
+  if (!cursorTimestamp) return true;
+  try {
+    const msgTime = new Date(timestampStr).getTime();
+    const cursorTime = new Date(cursorTimestamp).getTime();
+    return msgTime > cursorTime;
+  } catch {
+    return true;
+  }
+}
+
