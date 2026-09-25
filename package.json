@@ -7,13 +7,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx src/lib/self-check.ts"
+    "test": "tsx src/lib/self-check.ts && tsx src/lib/ai/ai-parser.test.ts"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
     "next": "14.2.32",
     "react": "18.3.1",
-    "react-dom": "18.3.1"
+    "react-dom": "18.3.1",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/node": "^20.17.0",

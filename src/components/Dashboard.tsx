@@ -147,7 +147,12 @@ const SAMPLE_MESSAGES = [
     group: "NLP"
   },
   {
-    label: "Answer Sheets Announcement",
+    label: "Ambiguous (No Deadline)",
+    text: "Submit this soon.",
+    group: "Class Group"
+  },
+  {
+    label: "Answer Sheets Notice",
     text: "Today is the last date to collect the answer sheets.",
     group: "Department Notice"
   },
@@ -341,6 +346,35 @@ export default function Dashboard() {
     });
   }, [items, activeTab, subjectFilter, typeFilter, statusFilter, searchQuery, now]);
 
+  interface InspectionData {
+    originalMessage: string;
+    sourceGroup?: string;
+    providerUsed: string;
+    fallbackOccurred: boolean;
+    aiExtraction: any;
+    validation: {
+      valid: boolean;
+      confidenceScore: number | null;
+      confidenceLevel: string;
+      needsConfirmation: boolean;
+      confirmationReason: string | null;
+    };
+    engineResult: {
+      action: string;
+      item?: AcademicItem;
+      updatedItemId?: string;
+      changeSummary?: string;
+      reason?: string;
+      confidence?: string;
+    };
+    beforeAfter?: {
+      before: Partial<AcademicItem>;
+      after: Partial<AcademicItem>;
+    };
+  }
+
+  const [inspection, setInspection] = useState<InspectionData | null>(null);
+
   // Message parsing submission
   async function handleCaptureMessage(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -354,7 +388,7 @@ export default function Dashboard() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          text: message.trim(),
+          message: message.trim(),
           existingItems: items,
           sourceGroup: sourceGroup.trim() || undefined
         })
@@ -363,28 +397,41 @@ export default function Dashboard() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Failed to parse message");
 
-      if (data.action === "NON_ACADEMIC") {
+      // Save complete inspection data for the AI Inspector UI
+      setInspection({
+        originalMessage: message.trim(),
+        sourceGroup: sourceGroup.trim() || undefined,
+        providerUsed: data.providerUsed ?? "deterministic-fallback",
+        fallbackOccurred: Boolean(data.fallbackOccurred),
+        aiExtraction: data.aiExtraction,
+        validation: data.validation,
+        engineResult: data.result,
+        beforeAfter: data.beforeAfter ?? undefined
+      });
+
+      const action = data.result?.action;
+      if (action === "NON_ACADEMIC") {
         setNotice({
           type: "warning",
           text: `Filtered: "${message.slice(0, 50)}..." was flagged as casual greeting or non-academic chatter.`
         });
-      } else if (data.action === "IGNORED_DUPLICATE") {
+      } else if (action === "IGNORED_DUPLICATE") {
         setNotice({
           type: "info",
-          text: `Duplicate detected: Message is already recorded for "${data.item?.title || "existing item"}".`
+          text: `Duplicate detected: Message is already recorded for "${data.result?.item?.title || "existing item"}".`
         });
-      } else if (data.action === "UPDATED" && data.item) {
-        setItems(prev => prev.map(it => it.id === data.item.id ? data.item : it));
+      } else if (action === "UPDATED" && data.result?.item) {
+        setItems(prev => prev.map(it => it.id === data.result.item.id ? data.result.item : it));
         setNotice({
           type: "success",
-          text: `Event Updated: ${data.changeSummary || "Changes recorded in event history."}`
+          text: `Event Updated: ${data.result.changeSummary || "Changes recorded in event history."}`
         });
         setMessage("");
-      } else if (data.action === "CREATED" && data.item) {
-        setItems(prev => [data.item, ...prev]);
+      } else if (action === "CREATED" && data.result?.item) {
+        setItems(prev => [data.result.item, ...prev]);
         setNotice({
           type: "success",
-          text: `New item created: "${data.item.title}" (${data.item.type}).`
+          text: `New item created: "${data.result.item.title}" (${data.result.item.type}).`
         });
         setMessage("");
       }
@@ -645,6 +692,165 @@ export default function Dashboard() {
             {notice.type === "error" && <AlertCircle size={16} />}
             {notice.type === "info" && <MessageSquare size={16} />}
             <span>{notice.text}</span>
+          </div>
+        )}
+
+        {/* AI Extraction & Event Engine Inspector */}
+        {inspection && (
+          <div
+            style={{
+              marginTop: 18,
+              borderTop: "1px dashed #cbd5e1",
+              paddingTop: 16
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Sparkles size={16} color="#7c3aed" />
+                <span style={{ fontWeight: 800, fontSize: 14, color: "#1e1b4b" }}>
+                  AI Extraction & Event Engine Inspector
+                </span>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: "2px 8px",
+                    borderRadius: 6,
+                    background: inspection.providerUsed === "gemini" ? "#f3e8ff" : "#f1f5f9",
+                    color: inspection.providerUsed === "gemini" ? "#6b21a8" : "#475569",
+                    fontWeight: 700
+                  }}
+                >
+                  Provider: {inspection.providerUsed}
+                </span>
+                {inspection.fallbackOccurred && (
+                  <span style={{ fontSize: 11, background: "#fff7ed", color: "#c2410c", padding: "2px 6px", borderRadius: 4, fontWeight: 600 }}>
+                    Fallback Active
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 14 }}>
+              {/* 1. Original Message */}
+              <div style={{ background: "#f8fafc", border: "1px solid #e2e8f0", borderRadius: 10, padding: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase", marginBottom: 6 }}>
+                  1. Original WhatsApp Message
+                </div>
+                <div style={{ fontSize: 13, fontStyle: "italic", color: "#334155", background: "#ffffff", padding: "8px 10px", borderRadius: 6, border: "1px solid #e2e8f0", marginBottom: 6 }}>
+                  "{inspection.originalMessage}"
+                </div>
+                {inspection.sourceGroup && (
+                  <div style={{ fontSize: 11, color: "#64748b" }}>
+                    Source Group: <strong>{inspection.sourceGroup}</strong>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. AI Extraction */}
+              <div style={{ background: "#faf5ff", border: "1px solid #e9d5ff", borderRadius: 10, padding: 12 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: "#7e22ce", textTransform: "uppercase" }}>
+                    2. AI Structured Extraction
+                  </span>
+                  {inspection.validation?.confidenceScore !== null && (
+                    <span
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        padding: "1px 6px",
+                        borderRadius: 4,
+                        background: inspection.validation?.confidenceLevel === "HIGH" ? "#dcfce7" : inspection.validation?.confidenceLevel === "MEDIUM" ? "#fef3c7" : "#fee2e2",
+                        color: inspection.validation?.confidenceLevel === "HIGH" ? "#15803d" : inspection.validation?.confidenceLevel === "MEDIUM" ? "#b45309" : "#b91c1c"
+                      }}
+                    >
+                      Confidence: {Math.round((inspection.validation?.confidenceScore ?? 0) * 100)}% ({inspection.validation?.confidenceLevel})
+                    </span>
+                  )}
+                </div>
+
+                {inspection.aiExtraction ? (
+                  <div style={{ fontSize: 12, display: "grid", gap: 4, color: "#1e1b4b" }}>
+                    <div><strong>Action:</strong> <span style={{ padding: "1px 5px", borderRadius: 4, background: "#f3e8ff", color: "#6b21a8", fontWeight: 700 }}>{inspection.aiExtraction.action}</span></div>
+                    <div><strong>Type:</strong> {inspection.aiExtraction.type}</div>
+                    <div><strong>Subject:</strong> {inspection.aiExtraction.subject || "null (needs confirmation)"}</div>
+                    <div><strong>Title:</strong> {inspection.aiExtraction.title || "null"}</div>
+                    <div><strong>Date:</strong> {inspection.aiExtraction.eventDate || "null"}</div>
+                    <div><strong>Time:</strong> {inspection.aiExtraction.eventTime || "null"}</div>
+                    <div><strong>Deadline:</strong> {inspection.aiExtraction.deadline || "null"}</div>
+                    <div>
+                      <strong>Submission Link:</strong>{" "}
+                      {inspection.aiExtraction.submissionUrl ? (
+                        <a href={inspection.aiExtraction.submissionUrl} target="_blank" rel="noreferrer" style={{ color: "#2563eb", textDecoration: "underline" }}>
+                          {inspection.aiExtraction.submissionUrl}
+                        </a>
+                      ) : (
+                        "null"
+                      )}
+                    </div>
+                    {inspection.aiExtraction.resourceUrls?.length > 0 && (
+                      <div><strong>Resources:</strong> {inspection.aiExtraction.resourceUrls.join(", ")}</div>
+                    )}
+                    {inspection.aiExtraction.requirements?.length > 0 && (
+                      <div><strong>Requirements:</strong> {inspection.aiExtraction.requirements.join("; ")}</div>
+                    )}
+                    {inspection.aiExtraction.changeDescription && (
+                      <div><strong>Change Description:</strong> {inspection.aiExtraction.changeDescription}</div>
+                    )}
+                    {inspection.validation?.needsConfirmation && (
+                      <div style={{ color: "#b45309", background: "#fef3c7", padding: "4px 8px", borderRadius: 4, marginTop: 4 }}>
+                        ⚠️ Needs Confirmation: {inspection.validation?.confirmationReason || "Uncertain extraction"}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, color: "#64748b" }}>No extraction payload available.</div>
+                )}
+              </div>
+
+              {/* 3. Event Engine Result & Before / After */}
+              <div style={{ background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: 12 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#166534", textTransform: "uppercase", marginBottom: 6 }}>
+                  3. Event Engine Result
+                </div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#14532d", marginBottom: 6 }}>
+                  Action: <span style={{ textTransform: "uppercase" }}>{inspection.engineResult?.action}</span>
+                </div>
+                {inspection.engineResult?.changeSummary && (
+                  <div style={{ fontSize: 12, color: "#15803d", marginBottom: 8 }}>
+                    {inspection.engineResult.changeSummary}
+                  </div>
+                )}
+
+                {/* BEFORE → AFTER Box */}
+                {inspection.beforeAfter && (
+                  <div style={{ background: "#ffffff", border: "1px solid #cbd5e1", borderRadius: 8, padding: 8, marginTop: 6, fontSize: 11 }}>
+                    <div style={{ fontWeight: 800, color: "#334155", marginBottom: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                      <History size={12} />
+                      BEFORE → AFTER MODIFICATION:
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr auto 1fr", gap: 4, alignItems: "center", background: "#f8fafc", padding: 6, borderRadius: 6 }}>
+                      <div>
+                        <div style={{ color: "#64748b", fontWeight: 600 }}>BEFORE</div>
+                        <div>Date: {inspection.beforeAfter.before.eventDate || "unspecified"}</div>
+                        <div>Status: {inspection.beforeAfter.before.status}</div>
+                        {inspection.beforeAfter.before.eventTime && <div>Time: {inspection.beforeAfter.before.eventTime}</div>}
+                        {inspection.beforeAfter.before.submissionUrl && <div>Link: {inspection.beforeAfter.before.submissionUrl.slice(0, 20)}...</div>}
+                      </div>
+                      <div style={{ fontWeight: 900, color: "#2563eb", fontSize: 14 }}>→</div>
+                      <div>
+                        <div style={{ color: "#15803d", fontWeight: 700 }}>AFTER</div>
+                        <div style={{ fontWeight: 700, color: "#0f172a" }}>Date: {inspection.beforeAfter.after.eventDate || "unspecified"}</div>
+                        <div style={{ fontWeight: 700, color: "#c2410c" }}>Status: {inspection.beforeAfter.after.status}</div>
+                        {inspection.beforeAfter.after.eventTime && <div>Time: {inspection.beforeAfter.after.eventTime}</div>}
+                        {inspection.beforeAfter.after.submissionUrl && <div>Link: {inspection.beforeAfter.after.submissionUrl.slice(0, 20)}...</div>}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
       </section>

@@ -1,18 +1,25 @@
 import { AcademicItem, ChangeRecord, ParseResult } from "./types";
 import { isNonAcademicMessage, parseAcademicMessage } from "./parser";
 import { formatCalendarDate } from "./dateUtils";
+import {
+  AIExtractionOutput,
+  AIParseContext,
+  AIProvider,
+  evaluateConfidence,
+  parseAcademicMessageWithAI
+} from "./ai";
 
 /**
- * Match a message against existing items based on title tokens and subject.
+ * Match a message against existing items based on title tokens, snippet, and subject.
  */
-function findMatchingItem(
-  title: string,
-  targetSnippet: string | undefined,
-  subject: string,
+export function findMatchingItem(
+  title: string | null | undefined,
+  targetSnippet: string | null | undefined,
+  subject: string | null | undefined,
   existingItems: AcademicItem[]
 ): AcademicItem | undefined {
-  const normTitle = title.toLowerCase().trim();
-  const normSnippet = targetSnippet?.toLowerCase().trim();
+  const normTitle = (title ?? "").toLowerCase().trim();
+  const normSnippet = (targetSnippet ?? "").toLowerCase().trim();
 
   // 1. Direct match on snippet (e.g. "slip test 2", "lab 2", "assignment 1")
   if (normSnippet) {
@@ -24,31 +31,338 @@ function findMatchingItem(
   }
 
   // 2. Exact or substring title match
-  const directMatch = existingItems.find(item => {
-    const itemTitle = item.title.toLowerCase();
-    return itemTitle === normTitle ||
-           itemTitle.includes(normTitle) ||
-           normTitle.includes(itemTitle);
-  });
-  if (directMatch) return directMatch;
-
-  // 3. Significant token overlap (e.g. "slip test 2" vs "Slip Test 2")
-  const tokens = normTitle.split(/\s+/).filter(w => w.length > 2);
-  if (tokens.length >= 2) {
-    const tokenMatch = existingItems.find(item => {
-      const itemTokens = item.title.toLowerCase().split(/\s+/);
-      const matches = tokens.filter(t => itemTokens.includes(t));
-      return matches.length >= 2;
+  if (normTitle) {
+    const directMatch = existingItems.find(item => {
+      const itemTitle = item.title.toLowerCase();
+      return itemTitle === normTitle ||
+             itemTitle.includes(normTitle) ||
+             normTitle.includes(itemTitle);
     });
-    if (tokenMatch) return tokenMatch;
+    if (directMatch) return directMatch;
+
+    // 3. Significant token overlap (e.g. "slip test 2" vs "Slip Test 2")
+    const tokens = normTitle.split(/\s+/).filter(w => w.length > 2);
+    if (tokens.length >= 2) {
+      const tokenMatch = existingItems.find(item => {
+        const itemTokens = item.title.toLowerCase().split(/\s+/);
+        const matches = tokens.filter(t => itemTokens.includes(t));
+        return matches.length >= 2;
+      });
+      if (tokenMatch) return tokenMatch;
+    }
   }
 
   return undefined;
 }
 
+export interface AIParsingResult extends ParseResult {
+  aiExtraction?: AIExtractionOutput;
+  providerUsed?: string;
+  fallbackOccurred?: boolean;
+  beforeAfter?: {
+    before: Partial<AcademicItem>;
+    after: Partial<AcademicItem>;
+  };
+}
+
 /**
- * Core event processor that handles new academic messages, duplicate detection,
- * and updates existing items with full change history when modifications occur.
+ * Phase 2 AI-Powered Academic Event Processor.
+ * Combines AI structured extraction with the Event Intelligence Engine.
+ */
+export async function processAcademicMessageWithAI(
+  text: string,
+  existingItems: AcademicItem[],
+  options?: {
+    sourceGroup?: string;
+    sourceSender?: string;
+    referenceDate?: Date;
+    timezone?: string;
+  },
+  customAIProvider?: AIProvider
+): Promise<AIParsingResult> {
+  const refDate = options?.referenceDate ?? new Date();
+  const timezone = options?.timezone ?? "Asia/Kolkata";
+  const nowIso = refDate.toISOString();
+  const currentDate = refDate.toISOString().slice(0, 10);
+  const trimmed = text.trim();
+
+  // 1. Check for duplicate raw message before calling AI
+  const duplicateItem = existingItems.find(item =>
+    item && Array.isArray(item.originalMessages) &&
+    item.originalMessages.some(m => typeof m === "string" && m.trim().toLowerCase() === trimmed.toLowerCase())
+  );
+  if (duplicateItem) {
+    return {
+      action: "IGNORED_DUPLICATE",
+      item: duplicateItem,
+      updatedItemId: duplicateItem.id,
+      reason: `Duplicate message already recorded for "${duplicateItem.title}".`,
+      confidence: "HIGH"
+    };
+  }
+
+  // 2. Build Context for AI model
+  const context: AIParseContext = {
+    currentDate,
+    currentDateTime: nowIso,
+    timezone,
+    sourceGroup: options?.sourceGroup,
+    sourceSender: options?.sourceSender,
+    existingEvents: existingItems.map(item => ({
+      id: item.id,
+      title: item.title,
+      subject: item.subject,
+      type: item.type,
+      eventDate: item.eventDate,
+      eventTime: item.eventTime,
+      deadline: item.deadline,
+      submissionUrl: item.submissionUrl,
+      status: item.status
+    }))
+  };
+
+  // 3. Extract with AI Provider (or fallback)
+  const { extraction, providerUsed, fallbackOccurred } =
+    await parseAcademicMessageWithAI(trimmed, context, customAIProvider);
+
+  // 4. Handle NON_ACADEMIC
+  if (extraction.action === "NON_ACADEMIC") {
+    return {
+      action: "NON_ACADEMIC",
+      reason: "Message flagged as casual greeting or non-academic chatter.",
+      aiExtraction: extraction,
+      providerUsed,
+      fallbackOccurred
+    };
+  }
+
+  // 5. Handle IGNORED_DUPLICATE from AI
+  if (extraction.action === "IGNORED_DUPLICATE") {
+    return {
+      action: "IGNORED_DUPLICATE",
+      reason: "AI identified this message as a duplicate.",
+      aiExtraction: extraction,
+      providerUsed,
+      fallbackOccurred
+    };
+  }
+
+  // 6. Match against existing events
+  const matchedItem = findMatchingItem(
+    extraction.title,
+    extraction.targetEventTitle,
+    extraction.subject,
+    existingItems
+  );
+
+  // 7. If matched item exists and action indicates an update or modification:
+  const isExplicitModification =
+    extraction.action === "POSTPONED" ||
+    extraction.action === "UPDATED" ||
+    extraction.action === "CANCELLED" ||
+    Boolean(extraction.targetEventTitle) ||
+    Boolean(extraction.changeDescription);
+
+  if (matchedItem && isExplicitModification) {
+    const changes: ChangeRecord[] = [];
+    const beforeState: Partial<AcademicItem> = {
+      title: matchedItem.title,
+      subject: matchedItem.subject,
+      eventDate: matchedItem.eventDate,
+      eventTime: matchedItem.eventTime,
+      deadline: matchedItem.deadline,
+      submissionUrl: matchedItem.submissionUrl,
+      status: matchedItem.status
+    };
+
+    const updated: AcademicItem = {
+      ...matchedItem,
+      originalMessages: [
+        ...(Array.isArray(matchedItem.originalMessages)
+          ? matchedItem.originalMessages
+          : matchedItem.originalMessages
+            ? [matchedItem.originalMessages]
+            : []),
+        trimmed
+      ],
+      updatedAt: nowIso
+    };
+
+    // A. Postponement / Date change
+    if (extraction.eventDate && extraction.eventDate !== matchedItem.eventDate) {
+      changes.push({
+        id: crypto.randomUUID(),
+        timestamp: nowIso,
+        field: "eventDate",
+        oldValue: matchedItem.eventDate,
+        newValue: extraction.eventDate,
+        summary: extraction.changeDescription || `Date changed from ${matchedItem.eventDate ? formatCalendarDate(matchedItem.eventDate) : "unspecified"} to ${formatCalendarDate(extraction.eventDate)} (Postponed)`,
+        sourceMessage: trimmed
+      });
+      updated.eventDate = extraction.eventDate;
+      updated.status = "POSTPONED";
+    }
+
+    if (extraction.eventTime && extraction.eventTime !== matchedItem.eventTime) {
+      changes.push({
+        id: crypto.randomUUID(),
+        timestamp: nowIso,
+        field: "eventTime",
+        oldValue: matchedItem.eventTime,
+        newValue: extraction.eventTime,
+        summary: `Time changed from ${matchedItem.eventTime ?? "unspecified"} to ${extraction.eventTime}`,
+        sourceMessage: trimmed
+      });
+      updated.eventTime = extraction.eventTime;
+    }
+
+    // B. Cancellation
+    if (extraction.action === "CANCELLED") {
+      changes.push({
+        id: crypto.randomUUID(),
+        timestamp: nowIso,
+        field: "status",
+        oldValue: matchedItem.status,
+        newValue: "CANCELLED",
+        summary: extraction.changeDescription || "Event was cancelled",
+        sourceMessage: trimmed
+      });
+      updated.status = "CANCELLED";
+    }
+
+    // C. Deadline change / extension
+    if (extraction.deadline && extraction.deadline !== matchedItem.deadline) {
+      changes.push({
+        id: crypto.randomUUID(),
+        timestamp: nowIso,
+        field: "deadline",
+        oldValue: matchedItem.deadline,
+        newValue: extraction.deadline,
+        summary: extraction.changeDescription || `Deadline changed to ${extraction.deadline}`,
+        sourceMessage: trimmed
+      });
+      updated.deadline = extraction.deadline;
+    }
+
+    // D. Submission URL update
+    if (extraction.submissionUrl && extraction.submissionUrl !== matchedItem.submissionUrl) {
+      changes.push({
+        id: crypto.randomUUID(),
+        timestamp: nowIso,
+        field: "submissionUrl",
+        oldValue: matchedItem.submissionUrl,
+        newValue: extraction.submissionUrl,
+        summary: `Submission link updated: ${extraction.submissionUrl}`,
+        sourceMessage: trimmed
+      });
+      updated.submissionUrl = extraction.submissionUrl;
+    }
+
+    // E. Subject update if previously unknown
+    if (updated.subject === "NEEDS_CONFIRMATION" && extraction.subject) {
+      changes.push({
+        id: crypto.randomUUID(),
+        timestamp: nowIso,
+        field: "subject",
+        oldValue: updated.subject,
+        newValue: extraction.subject,
+        summary: `Subject identified as ${extraction.subject}`,
+        sourceMessage: trimmed
+      });
+      updated.subject = extraction.subject;
+    }
+
+    // F. Append resource URLs
+    for (const resUrl of extraction.resourceUrls) {
+      if (!updated.resourceUrls.includes(resUrl)) {
+        updated.resourceUrls.push(resUrl);
+        changes.push({
+          id: crypto.randomUUID(),
+          timestamp: nowIso,
+          field: "resourceUrls",
+          newValue: resUrl,
+          summary: `Resource link added: ${resUrl}`,
+          sourceMessage: trimmed
+        });
+      }
+    }
+
+    // Append to change history
+    updated.changeHistory = [...(matchedItem.changeHistory ?? []), ...changes];
+
+    const changeSummary = changes.length > 0
+      ? changes.map(c => c.summary).join("; ")
+      : extraction.changeDescription || "Event updated with new message.";
+
+    const afterState: Partial<AcademicItem> = {
+      title: updated.title,
+      subject: updated.subject,
+      eventDate: updated.eventDate,
+      eventTime: updated.eventTime,
+      deadline: updated.deadline,
+      submissionUrl: updated.submissionUrl,
+      status: updated.status
+    };
+
+    return {
+      action: "UPDATED",
+      item: updated,
+      updatedItemId: updated.id,
+      changeSummary,
+      aiExtraction: extraction,
+      providerUsed,
+      fallbackOccurred,
+      beforeAfter: {
+        before: beforeState,
+        after: afterState
+      }
+    };
+  }
+
+  // 8. Otherwise: Create a brand new item
+  const confidenceLevel = evaluateConfidence(
+    extraction.confidence,
+    extraction.needsConfirmation
+  );
+
+  const subject = extraction.subject ?? (options?.sourceGroup ? options.sourceGroup : "NEEDS_CONFIRMATION");
+  const title = extraction.title ?? "New Academic Event";
+
+  const newItem: AcademicItem = {
+    id: crypto.randomUUID(),
+    title,
+    subject,
+    type: extraction.type,
+    status: extraction.needsConfirmation ? "INBOX" : "INBOX",
+    deadline: extraction.deadline ?? (extraction.deadlineTime && extraction.eventDate ? `${extraction.eventDate}T${extraction.deadlineTime}` : undefined),
+    eventDate: extraction.eventDate ?? undefined,
+    eventTime: extraction.eventTime ?? extraction.deadlineTime ?? undefined,
+    submissionUrl: extraction.submissionUrl ?? undefined,
+    resourceUrls: extraction.resourceUrls,
+    attachmentNames: extraction.attachmentNames,
+    description: extraction.description ?? trimmed,
+    sourceGroup: options?.sourceGroup,
+    sourceSender: options?.sourceSender,
+    originalMessages: [trimmed],
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    changeHistory: [],
+    confidence: confidenceLevel
+  };
+
+  return {
+    action: extraction.needsConfirmation ? "CREATED" : "CREATED",
+    item: newItem,
+    aiExtraction: extraction,
+    providerUsed,
+    fallbackOccurred,
+    confidence: confidenceLevel,
+    reason: extraction.confirmationReason ?? undefined
+  };
+}
+
+/**
+ * Phase 1 deterministic processor preserved for backward compatibility and fast local testing
  */
 export function processAcademicMessage(
   text: string,
@@ -75,7 +389,8 @@ export function processAcademicMessage(
 
   // 3. Check for exact duplicate message
   const duplicateItem = existingItems.find(item =>
-    item.originalMessages.some(m => m.trim().toLowerCase() === trimmed.toLowerCase())
+    item && Array.isArray(item.originalMessages) &&
+    item.originalMessages.some(m => typeof m === "string" && m.trim().toLowerCase() === trimmed.toLowerCase())
   );
   if (duplicateItem) {
     return {
