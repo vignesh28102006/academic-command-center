@@ -72,6 +72,19 @@ export interface RawMessageRecord {
   processedAt: string;
   processingStatus: "PROCESSED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC" | "FAILED";
   linkedEventId?: string;
+  sourceMessageId?: string;
+}
+
+export interface CollectorStats {
+  endpointStatus: "CONFIGURED" | "AWAITING_SECRET";
+  totalReceived: number;
+  nonAcademic: number;
+  duplicate: number;
+  eventsCreated: number;
+  eventsUpdated: number;
+  lastReceivedAt: string | null;
+  lastProcessedMessage: string | null;
+  lastResult: string | null;
 }
 
 export interface SubjectMappingRecord {

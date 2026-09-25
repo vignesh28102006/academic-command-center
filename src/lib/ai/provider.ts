@@ -89,8 +89,8 @@ export class DeterministicFallbackProvider implements AIProvider {
       targetTitle = parsed.modificationIntent.targetTitleSnippet ?? null;
     }
 
-    // Check ambiguous message like "Submit this soon."
-    const isAmbiguous = /\b(submit\s+(?:this\s+)?soon|do\s+it\s+quickly)\b/i.test(trimmed);
+    // Check ambiguous message like "Submit this soon.", "Please submit project soon."
+    const isAmbiguous = /\b(submit\s+[^.!?]*\bsoon|do\s+it\s+quickly)\b/i.test(trimmed) && !parsed.deadline && !parsed.eventDate;
     const needsConfirmation = isAmbiguous || parsed.subject === "NEEDS_CONFIRMATION" || parsed.confidence === "NEEDS_CONFIRMATION";
     const confirmationReason = isAmbiguous
       ? "Deadline is not specified."

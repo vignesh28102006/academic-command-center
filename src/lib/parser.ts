@@ -145,15 +145,15 @@ export interface ModificationIntent {
 export function detectModificationIntent(text: string, referenceDate: Date = new Date()): ModificationIntent {
   const t = text.trim();
 
-  // 1. Postponement: "is postponed to 3 October", "postponed to 30-09-2026", "rescheduled to Monday"
-  const postponeMatch = t.match(/\b(?:is\s+)?(?:postponed|rescheduled|deferred)\s+(?:to|till|until)\s+([^.,;\n]+)/i);
+  // 1. Postponement: "is postponed to 3 October", "has been postponed from 30 September to 3 October", "rescheduled to Monday"
+  const postponeMatch = t.match(/\b(?:is\s+|has\s+been\s+)?(?:postponed|rescheduled|deferred)(?:\s+from\s+[^.,;\n]+)?\s+(?:to|till|until)\s+([^.,;\n]+)/i);
   if (postponeMatch) {
     const datePart = postponeMatch[1].trim();
     const extractedDate = extractDateString(datePart, referenceDate);
     const extractedTime = extractTimeString(datePart) ?? extractTimeString(t);
 
-    // Extract target title snippet (e.g., from "Slip Test 2 is postponed...")
-    const beforePostpone = t.split(/\b(?:is\s+)?(?:postponed|rescheduled|deferred)\b/i)[0].trim();
+    // Extract target title snippet (e.g., from "Slip Test 2 has been postponed...")
+    const beforePostpone = t.split(/\b(?:is\s+|has\s+been\s+)?(?:postponed|rescheduled|deferred)\b/i)[0].trim();
     const targetMatch = beforePostpone.match(/\b(slip\s*test\s*\d+|lab\s*\d+|assignment\s*\d+|quiz\s*\d+|exam|test)\b/i);
 
     return {
@@ -166,10 +166,10 @@ export function detectModificationIntent(text: string, referenceDate: Date = new
     };
   }
 
-  // 2. Cancellation: "Slip test 2 is cancelled", "no exam tomorrow"
-  const cancelMatch = t.match(/\b(?:is\s+)?(?:cancelled|canceled|called\s*off)\b/i);
+  // 2. Cancellation: "Slip test 2 is cancelled", "has been cancelled", "no exam tomorrow"
+  const cancelMatch = t.match(/\b(?:is\s+|has\s+been\s+)?(?:cancelled|canceled|called\s*off)\b/i);
   if (cancelMatch) {
-    const beforeCancel = t.split(/\b(?:is\s+)?(?:cancelled|canceled|called\s*off)\b/i)[0].trim();
+    const beforeCancel = t.split(/\b(?:is\s+|has\s+been\s+)?(?:cancelled|canceled|called\s*off)\b/i)[0].trim();
     const targetMatch = beforeCancel.match(/\b(slip\s*test\s*\d+|lab\s*\d+|assignment\s*\d+|quiz\s*\d+|exam|test)\b/i);
 
     return {

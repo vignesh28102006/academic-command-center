@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useMemo, useEffect } from "react";
-import { AcademicItem, AcademicStatus, AcademicType, ChangeRecord } from "@/lib/types";
+import { AcademicItem, AcademicStatus, AcademicType, ChangeRecord, CollectorStats } from "@/lib/types";
 import {
   formatCalendarDate,
   formatDeadlineDisplay,
@@ -28,7 +28,10 @@ import {
   Tag,
   Check,
   Send,
-  AlertCircle
+  AlertCircle,
+  Radio,
+  RefreshCw,
+  ShieldCheck
 } from "lucide-react";
 
 type TabType =
@@ -461,7 +464,28 @@ export default function Dashboard() {
       }
     }
     loadServerEvents();
+    loadCollectorStats();
+
+    const interval = setInterval(loadCollectorStats, 10000);
+    return () => clearInterval(interval);
   }, []);
+
+  const [collectorStats, setCollectorStats] = useState<CollectorStats | null>(null);
+  const [collectorPanelOpen, setCollectorPanelOpen] = useState(true);
+
+  async function loadCollectorStats() {
+    try {
+      const res = await fetch("/api/collector/status");
+      if (res.ok) {
+        const data = await res.json();
+        if (data?.stats) {
+          setCollectorStats(data.stats);
+        }
+      }
+    } catch (err) {
+      console.warn("Could not load collector stats:", err);
+    }
+  }
 
   // Toggle item complete status with Supabase + Notion persistence
   async function toggleComplete(id: string) {
@@ -557,7 +581,7 @@ export default function Dashboard() {
                 College Intelligence Hub
               </span>
               <span style={{ fontSize: 11, background: "#dcfce7", color: "#15803d", padding: "2px 6px", borderRadius: 4, fontWeight: 700 }}>
-                Phase 3: Supabase + Notion Live
+                Phase 4A: WhatsApp Collector Active
               </span>
             </div>
             <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 6px", color: "#0f172a", letterSpacing: "-0.02em" }}>
@@ -577,6 +601,126 @@ export default function Dashboard() {
           </div>
         </div>
       </header>
+
+      {/* Collector Status Panel (Phase 4A) */}
+      <section
+        style={{
+          background: "#f8fafc",
+          border: "1px solid #e2e8f0",
+          borderRadius: 16,
+          padding: "16px 20px",
+          marginBottom: 20,
+          boxShadow: "0 1px 2px rgba(0,0,0,0.02)"
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: collectorPanelOpen ? 14 : 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#22c55e", boxShadow: "0 0 8px #22c55e" }} />
+            <Radio size={16} color="#0f766e" />
+            <span style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>WhatsApp Web Collector Status</span>
+            <span style={{
+              fontSize: 11,
+              fontWeight: 700,
+              padding: "2px 8px",
+              borderRadius: 12,
+              background: collectorStats?.endpointStatus === "CONFIGURED" ? "#dcfce7" : "#fef3c7",
+              color: collectorStats?.endpointStatus === "CONFIGURED" ? "#15803d" : "#b45309"
+            }}>
+              {collectorStats?.endpointStatus === "CONFIGURED" ? "Endpoint Ready" : "Awaiting Secret"}
+            </span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <button
+              onClick={loadCollectorStats}
+              title="Refresh collector metrics"
+              style={{
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: "4px 8px",
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 12,
+                color: "#64748b"
+              }}
+            >
+              <RefreshCw size={13} />
+              <span>Refresh</span>
+            </button>
+            <button
+              onClick={() => setCollectorPanelOpen(!collectorPanelOpen)}
+              style={{
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                color: "#64748b"
+              }}
+            >
+              {collectorPanelOpen ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+            </button>
+          </div>
+        </div>
+
+        {collectorPanelOpen && (
+          <div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 14 }}>
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Messages Received</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "#0f172a" }}>{collectorStats?.totalReceived ?? 0}</div>
+              </div>
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Filtered Chatter</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "#64748b" }}>{collectorStats?.nonAcademic ?? 0}</div>
+              </div>
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Duplicates Ignored</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "#eab308" }}>{collectorStats?.duplicate ?? 0}</div>
+              </div>
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Events Created</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "#16a34a" }}>{collectorStats?.eventsCreated ?? 0}</div>
+              </div>
+              <div style={{ background: "#ffffff", padding: "10px 12px", borderRadius: 10, border: "1px solid #e2e8f0" }}>
+                <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Events Updated</div>
+                <div style={{ fontSize: 20, fontWeight: 800, color: "#2563eb" }}>{collectorStats?.eventsUpdated ?? 0}</div>
+              </div>
+            </div>
+
+            <div style={{ background: "#ffffff", padding: "10px 14px", borderRadius: 10, border: "1px solid #e2e8f0", fontSize: 12, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <div>
+                <span style={{ color: "#64748b", fontWeight: 600 }}>Endpoint: </span>
+                <code style={{ background: "#f1f5f9", padding: "2px 6px", borderRadius: 4, color: "#0f172a" }}>POST /api/collector/messages</code>
+              </div>
+              <div>
+                <span style={{ color: "#64748b", fontWeight: 600 }}>Last Received: </span>
+                <span style={{ color: "#0f172a" }}>
+                  {collectorStats?.lastReceivedAt ? new Date(collectorStats.lastReceivedAt).toLocaleTimeString() : "No messages yet"}
+                </span>
+              </div>
+              <div>
+                <span style={{ color: "#64748b", fontWeight: 600 }}>Last Result: </span>
+                <span style={{
+                  fontWeight: 700,
+                  color: collectorStats?.lastResult === "CREATED" ? "#16a34a" :
+                         collectorStats?.lastResult === "UPDATED" ? "#2563eb" :
+                         collectorStats?.lastResult === "IGNORED_DUPLICATE" ? "#eab308" :
+                         collectorStats?.lastResult === "NON_ACADEMIC" ? "#64748b" : "#94a3b8"
+                }}>
+                  {collectorStats?.lastResult || "Idle"}
+                </span>
+              </div>
+              {collectorStats?.lastProcessedMessage && (
+                <div style={{ width: "100%", borderTop: "1px dashed #e2e8f0", paddingTop: 8, color: "#475569" }}>
+                  <span style={{ color: "#64748b", fontWeight: 600 }}>Last Processed: </span>
+                  <span style={{ fontStyle: "italic" }}>"{collectorStats.lastProcessedMessage}"</span>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* Message Ingestion Box */}
       <section

@@ -347,7 +347,8 @@ export async function processAcademicMessageWithAI(
     createdAt: nowIso,
     updatedAt: nowIso,
     changeHistory: [],
-    confidence: confidenceLevel
+    confidence: confidenceLevel,
+    needsConfirmation: Boolean(extraction.needsConfirmation || confidenceLevel === "NEEDS_CONFIRMATION")
   };
 
   return {

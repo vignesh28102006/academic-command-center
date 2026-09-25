@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx src/lib/self-check.ts && tsx src/lib/ai/ai-parser.test.ts && tsx src/lib/db/database-notion.test.ts"
+    "test": "tsx src/lib/self-check.ts && tsx src/lib/ai/ai-parser.test.ts && tsx src/lib/db/database-notion.test.ts && tsx src/lib/collector/collector.test.ts"
   },
   "dependencies": {
     "@notionhq/client": "^5.26.0",
