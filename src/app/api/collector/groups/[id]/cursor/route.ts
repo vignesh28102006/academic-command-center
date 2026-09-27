@@ -11,6 +11,10 @@ export const dynamic = "force-dynamic";
 
 const cursorUpdateSchema = z.object({
   groupName: z.string().optional(),
+  lastScannedMessageTimestamp: z.string().optional().nullable(),
+  lastScannedMessageId: z.string().optional().nullable(),
+  lastProcessedAcademicMessageTimestamp: z.string().optional().nullable(),
+  lastProcessedAcademicMessageId: z.string().optional().nullable(),
   lastProcessedMessageTimestamp: z.string().optional().nullable(),
   lastProcessedMessageId: z.string().optional().nullable(),
   backfillComplete: z.boolean().optional(),
@@ -27,6 +31,7 @@ const cursorUpdateSchema = z.object({
   messagesScannedIncrement: z.number().int().optional(),
   messagesProcessedIncrement: z.number().int().optional(),
   messagesIgnoredIncrement: z.number().int().optional(),
+  messagesFailedIncrement: z.number().int().optional(),
   lastError: z.string().optional().nullable()
 });
 
@@ -57,6 +62,18 @@ export async function PATCH(
 
   const updates: any = {};
   if (parsed.data.groupName) updates.groupName = parsed.data.groupName;
+  if (parsed.data.lastScannedMessageTimestamp !== undefined) {
+    updates.lastScannedMessageTimestamp = parsed.data.lastScannedMessageTimestamp;
+  }
+  if (parsed.data.lastScannedMessageId !== undefined) {
+    updates.lastScannedMessageId = parsed.data.lastScannedMessageId;
+  }
+  if (parsed.data.lastProcessedAcademicMessageTimestamp !== undefined) {
+    updates.lastProcessedAcademicMessageTimestamp = parsed.data.lastProcessedAcademicMessageTimestamp;
+  }
+  if (parsed.data.lastProcessedAcademicMessageId !== undefined) {
+    updates.lastProcessedAcademicMessageId = parsed.data.lastProcessedAcademicMessageId;
+  }
   if (parsed.data.lastProcessedMessageTimestamp !== undefined) {
     updates.lastProcessedMessageTimestamp = parsed.data.lastProcessedMessageTimestamp;
   }
@@ -82,6 +99,9 @@ export async function PATCH(
   }
   if (parsed.data.messagesIgnoredIncrement) {
     updates.messagesIgnored = (existing.messagesIgnored || 0) + parsed.data.messagesIgnoredIncrement;
+  }
+  if (parsed.data.messagesFailedIncrement) {
+    updates.messagesFailed = (existing.messagesFailed || 0) + parsed.data.messagesFailedIncrement;
   }
 
   const updated = await updateCollectorGroupCursor(existing.groupIdentifier, updates);

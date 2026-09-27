@@ -73,10 +73,10 @@ async function runCollectorManualTest() {
   // ---------------------------------------------------------------------------
   // Step 2: Verification Scenario 1: 'CSE-C Official 2024' (GROUP → collected)
   // ---------------------------------------------------------------------------
-  console.log("Step 2: Testing GROUP 1 - 'CSE-C Official 2024'...");
+  console.log("Step 2: Testing GROUP 1 - 'CSE-C Announcements'...");
   // Simulate userscript chat switch
   await sendCollectorStatus({
-    currentGroup: "CSE-C Official 2024",
+    currentGroup: "CSE-C Announcements",
     chatType: "GROUP",
     collectionStatus: "ACTIVE"
   });
@@ -84,7 +84,7 @@ async function runCollectorManualTest() {
   const msg1 = `OS Assignment ${runTag} is due on 12 October at 11:59 PM: https://forms.gle/csec-${runTag}`;
   const res1 = await sendCollectorMessage({
     message: msg1,
-    sourceGroup: "CSE-C Official 2024",
+    sourceGroup: "CSE-C Announcements",
     sourceSender: "Faculty Incharge",
     messageTimestamp: new Date().toISOString(),
     sourceMessageId: `wamid.csec_${runTag}`
@@ -97,11 +97,11 @@ async function runCollectorManualTest() {
   console.log(`  • Source Group: ${res1.data.item?.sourceGroup}`);
   console.log(`  • Submission URL: ${res1.data.item?.submissionUrl}`);
 
-  if (res1.data.action !== "CREATED" || res1.data.item?.sourceGroup !== "CSE-C Official 2024") {
-    console.error("❌ CSE-C Official 2024 collection failed!");
+  if (res1.data.action !== "CREATED" || res1.data.item?.sourceGroup !== "CSE-C Announcements") {
+    console.error("❌ CSE-C Announcements collection failed!");
     process.exit(1);
   }
-  console.log("  ✓ GROUP 'CSE-C Official 2024' → Collected successfully!\n");
+  console.log("  ✓ GROUP 'CSE-C Announcements' → Collected successfully!\n");
 
   // ---------------------------------------------------------------------------
   // Step 3: Verification Scenario 2: 'Machine Learning CSE-C' (GROUP → collected)
@@ -164,7 +164,7 @@ async function runCollectorManualTest() {
   console.log("Step 5: Testing Ordinary Chatter Filtering in Group...");
   const chatterRes = await sendCollectorMessage({
     message: `Good morning sir! Wishing everyone a pleasant day ahead ${runTag}`,
-    sourceGroup: "CSE-C Official 2024",
+    sourceGroup: "CSE-C Announcements",
     sourceSender: "Class Student"
   });
 
@@ -181,7 +181,7 @@ async function runCollectorManualTest() {
   console.log("Step 6: Testing Duplicate Protection...");
   const dupRes = await sendCollectorMessage({
     message: msg1,
-    sourceGroup: "CSE-C Official 2024",
+    sourceGroup: "CSE-C Announcements",
     sourceSender: "Faculty Incharge"
   });
 
@@ -199,7 +199,7 @@ async function runCollectorManualTest() {
   const postMsg = `OS Assignment ${runTag} is postponed to 19 October`;
   const postRes = await sendCollectorMessage({
     message: postMsg,
-    sourceGroup: "CSE-C Official 2024",
+    sourceGroup: "CSE-C Announcements",
     sourceSender: "Faculty Incharge",
     messageTimestamp: new Date().toISOString(),
     sourceMessageId: `wamid.csec_post_${runTag}`
@@ -216,7 +216,7 @@ async function runCollectorManualTest() {
   console.log("Step 8: Testing September 10 Backfill Boundary Check...");
   const oldRes = await sendCollectorMessage({
     message: `Notice from September 5th #${runTag}`,
-    sourceGroup: "CSE-C Official 2024",
+    sourceGroup: "CSE-C Announcements",
     sourceSender: "Faculty",
     messageTimestamp: "2026-09-05T10:00:00+05:30"
   });
@@ -340,7 +340,7 @@ async function runCollectorManualTest() {
 
   console.log("\n============================================================");
   console.log("ALL INTEGRATION SCENARIOS VERIFIED SUCCESSFULLY! 🎉");
-  console.log("  1. CSE-C Official 2024       → COLLECTED");
+  console.log("  1. CSE-C Announcements      → COLLECTED");
   console.log("  2. Machine Learning CSE-C   → COLLECTED");
   console.log("  3. Personal 1-to-1 Chat     → IGNORED");
   console.log("  4. September 10 Boundary    → ENFORCED");

@@ -67,14 +67,14 @@ CRITICAL RULES:
      - If different subjects or tasks are mentioned (e.g. "Quiz 2 on Monday and Assignment 3 due Wednesday"), generate separate events for each subject/task.
    - For a single-event message, simply output an "events" array containing 1 event item.
 3. RELATIVE DATE RESOLUTION:
-   - For relative dates, compute concrete YYYY-MM-DD calendar dates strictly relative to:
-     - Current Date: ${context.currentDate}
-     - Current DateTime: ${context.currentDateTime}
+   - CRITICAL ANCHOR: For relative dates inside a WhatsApp message (e.g. "tomorrow", "next Tuesday", "this Friday", "today"), resolve strictly relative to the message's actual sent date:
+     - Message Sent Timestamp: ${context.sourceMessageTimestamp ?? context.currentDateTime}
+     - Message Sent Date: ${context.sourceMessageDate ?? context.currentDate}
      - Timezone: ${context.timezone}
-   - DO NOT guess or hallucinate the current date.
-   - "today" = ${context.currentDate}
-   - "tomorrow" = calendar date + 1 day
-   - "Monday" / "next Monday" / "next Tuesday" / "next Thursday" = compute exact YYYY-MM-DD calendar date.
+   - DO NOT resolve relative dates based on current scan date if sourceMessageTimestamp is provided.
+   - "today" = message sent date (${context.sourceMessageDate ?? context.currentDate})
+   - "tomorrow" = message sent date + 1 day
+   - "Monday" / "next Monday" / "next Tuesday" / "next Thursday" = compute exact calendar date strictly relative to the message sent date.
 4. DO NOT HALLUCINATE OR INVENT missing dates, times, subjects, or deadlines.
 5. If subject is not explicitly mentioned or clearly identifiable, return null.
 6. If a calendar date or deadline time is not specified in the message, return null.
@@ -90,11 +90,14 @@ CRITICAL RULES:
 
     const userPrompt = JSON.stringify({
       context: {
+        messageText: message.trim(),
+        sourceGroup: context.sourceGroup ?? null,
+        sourceSender: context.sourceSender ?? null,
+        sourceMessageTimestamp: context.sourceMessageTimestamp ?? null,
+        sourceMessageDate: context.sourceMessageDate ?? (context.sourceMessageTimestamp ? context.sourceMessageTimestamp.slice(0, 10) : null),
         currentDate: context.currentDate,
         currentDateTime: context.currentDateTime,
         timezone: context.timezone,
-        sourceGroup: context.sourceGroup ?? null,
-        sourceSender: context.sourceSender ?? null,
         existingEvents: context.existingEvents ?? []
       },
       message: message.trim()

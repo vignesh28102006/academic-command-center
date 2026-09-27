@@ -97,6 +97,9 @@ export async function processAcademicMessagePipeline(
     {
       sourceGroup,
       sourceSender,
+      sourceMessageTimestamp: messageTimestamp,
+      sourceMessageDate: messageTimestamp ? messageTimestamp.slice(0, 10) : undefined,
+      referenceDate: messageTimestamp ? new Date(messageTimestamp) : undefined,
       timezone: "Asia/Kolkata"
     }
   );
@@ -180,6 +183,10 @@ export async function processAcademicMessagePipeline(
         }
         if (sub.aiExtraction?.needsConfirmation || sub.confidence === "NEEDS_CONFIRMATION") {
           sub.item.needsConfirmation = true;
+        }
+        if (!sub.item.sourceMessageTimestamp && messageTimestamp) {
+          sub.item.sourceMessageTimestamp = messageTimestamp;
+          sub.item.sourceMessageDate = messageTimestamp.slice(0, 10);
         }
         const created = await createAcademicEvent(sub.item);
         const notionSync = await syncEventToNotion(created);
@@ -276,6 +283,11 @@ export async function processAcademicMessagePipeline(
 
     if (parsingResult.aiExtraction?.needsConfirmation || parsingResult.confidence === "NEEDS_CONFIRMATION") {
       parsingResult.item.needsConfirmation = true;
+    }
+
+    if (!parsingResult.item.sourceMessageTimestamp && messageTimestamp) {
+      parsingResult.item.sourceMessageTimestamp = messageTimestamp;
+      parsingResult.item.sourceMessageDate = messageTimestamp.slice(0, 10);
     }
 
     // Persist to Supabase

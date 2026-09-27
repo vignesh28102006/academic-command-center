@@ -79,3 +79,32 @@ export async function POST(request: Request) {
     );
   }
 }
+
+export async function DELETE(request: Request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const singleId = searchParams.get("id");
+    const body = await request.json().catch(() => null);
+    const ids: string[] = Array.isArray(body?.ids) ? body.ids : (singleId ? [singleId] : []);
+
+    if (ids.length === 0) {
+      return NextResponse.json({ error: "No event IDs provided for deletion" }, { status: 400 });
+    }
+
+    const { deleteAcademicEvent } = await import("@/lib/db/academicEvents");
+    let deletedCount = 0;
+    for (const eventId of ids) {
+      const ok = await deleteAcademicEvent(eventId);
+      if (ok) deletedCount++;
+    }
+
+    return NextResponse.json({ status: "ok", deletedCount, deletedIds: ids });
+  } catch (err) {
+    console.error("DELETE /api/events error:", err);
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : "Failed to delete academic events" },
+      { status: 500 }
+    );
+  }
+}
+

@@ -49,6 +49,8 @@ export interface AcademicItem {
   requirements?: string[];
   sourceGroup?: string;
   sourceSender?: string;
+  sourceMessageTimestamp?: string; // ISO 8601 string when WhatsApp message was sent
+  sourceMessageDate?: string; // YYYY-MM-DD calendar date when WhatsApp message was sent
   originalMessages: string[];
   sourceKey?: string;
   notionPageId?: string;
@@ -136,6 +138,13 @@ export interface CollectorGroupState {
   groupName: string;
   groupIdentifier: string;
   firstBackfillDate: string;
+  // Scanning progress cursor (advances on examined, ignored, and processed messages)
+  lastScannedMessageTimestamp?: string | null;
+  lastScannedMessageId?: string | null;
+  // Academic event processing cursor (advances only when academic events are processed)
+  lastProcessedAcademicMessageTimestamp?: string | null;
+  lastProcessedAcademicMessageId?: string | null;
+  // Backward compatibility aliases
   lastProcessedMessageTimestamp?: string | null;
   lastProcessedMessageId?: string | null;
   lastScanTime?: string | null;
@@ -145,6 +154,7 @@ export interface CollectorGroupState {
   messagesScanned: number;
   messagesProcessed: number;
   messagesIgnored: number;
+  messagesFailed?: number;
   lastError?: string | null;
   createdAt: string;
   updatedAt: string;

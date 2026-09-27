@@ -5,11 +5,15 @@ import { AcademicItem, AcademicStatus, AcademicType, ChangeRecord, CollectorStat
 import {
   formatCalendarDate,
   formatDeadlineDisplay,
+  formatTimeDeterministic,
+  formatDateTimeDeterministic,
   isOverdue,
   isToday,
   isUpcoming,
   toLocalDateString
 } from "@/lib/dateUtils";
+import { isGroupAllowed } from "@/lib/collector/allowedGroups";
+import { classifyAcademicMessage } from "@/lib/collector/relevanceFilter";
 import {
   Calendar,
   Clock,
@@ -205,6 +209,12 @@ export default function Dashboard() {
   const [expandedHistory, setExpandedHistory] = useState<Record<string, boolean>>({});
   const [expandedOriginal, setExpandedOriginal] = useState<Record<string, boolean>>({});
 
+  // Reviewable Cleanup state (for removing bad data: promotional, attendance-only, disallowed groups)
+  const [cleanupModalOpen, setCleanupModalOpen] = useState(false);
+  const [selectedCleanupIds, setSelectedCleanupIds] = useState<string[]>([]);
+  const [isCleaningUp, setIsCleaningUp] = useState(false);
+  const [cleanupMessage, setCleanupMessage] = useState<string | null>(null);
+
   // Save to localStorage on change (only after initial client mount)
   useEffect(() => {
     if (isMounted && typeof window !== "undefined") {
@@ -216,15 +226,13 @@ export default function Dashboard() {
   const ssrReferenceDate = useMemo(() => new Date("2026-09-27T12:00:00+05:30"), []);
   const now = useMemo(() => (isMounted ? new Date() : ssrReferenceDate), [isMounted, items]);
 
-  // Safe formatting helpers that prevent hydration mismatches
+  // Safe deterministic formatting helpers that eliminate SSR hydration mismatches
   const formatTimeSafe = (isoStr?: string | null): string => {
     if (!isoStr) return "Never";
-    if (!isMounted) {
-      const m = isoStr.match(/T(\d{2}:\d{2})/);
-      return m ? m[1] : isoStr.slice(0, 10);
-    }
     try {
-      return new Date(isoStr).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return isoStr;
+      return formatTimeDeterministic(d);
     } catch (_) {
       return isoStr;
     }
@@ -232,15 +240,59 @@ export default function Dashboard() {
 
   const formatDateTimeSafe = (isoStr?: string | null): string => {
     if (!isoStr) return "Never";
-    if (!isMounted) {
-      return isoStr.slice(0, 16).replace("T", " ");
-    }
     try {
-      return new Date(isoStr).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return isoStr;
+      return formatDateTimeDeterministic(d);
     } catch (_) {
       return isoStr;
     }
   };
+
+  // Identify suspicious items for reviewable cleanup (Requirement 30)
+  const suspiciousItems = useMemo(() => {
+    return items.flatMap(item => {
+      const issues: string[] = [];
+      if (item.sourceGroup && !isGroupAllowed(item.sourceGroup)) {
+        issues.push(`Disallowed group: ${item.sourceGroup}`);
+      }
+      const relevance = classifyAcademicMessage(`${item.title} ${item.description}`);
+      if (!relevance.shouldProcess) {
+        issues.push(relevance.reason || "Classified as non-academic");
+      }
+      if (issues.length > 0) {
+        return [{ item, reason: issues.join("; ") }];
+      }
+      return [];
+    });
+  }, [items]);
+
+  async function handleDeleteSuspiciousEvents(idsToDelete: string[]) {
+    if (idsToDelete.length === 0) return;
+    setIsCleaningUp(true);
+    try {
+      const res = await fetch("/api/events", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids: idsToDelete })
+      });
+      if (res.ok) {
+        setItems(prev => prev.filter(i => !idsToDelete.includes(i.id)));
+        setCleanupMessage(`Cleaned up ${idsToDelete.length} bad event(s).`);
+        setSelectedCleanupIds([]);
+        setTimeout(() => {
+          setCleanupModalOpen(false);
+          setCleanupMessage(null);
+        }, 1500);
+      } else {
+        alert("Failed to delete events from server.");
+      }
+    } catch (e: any) {
+      alert(`Error deleting events: ${e.message}`);
+    } finally {
+      setIsCleaningUp(false);
+    }
+  }
 
   // Statistics
   const stats = useMemo(() => {
@@ -1209,6 +1261,48 @@ export default function Dashboard() {
                 </div>
               )}
 
+              {/* Reviewable Bad Data Cleanup Banner */}
+              {suspiciousItems.length > 0 && (
+                <div style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "10px 14px",
+                  background: "#fffbeb",
+                  border: "1px solid #fef3c7",
+                  borderRadius: 8,
+                  marginBottom: 12,
+                  fontSize: 12,
+                  color: "#92400e"
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <AlertTriangle size={16} color="#d97706" />
+                    <span>
+                      <strong>{suspiciousItems.length} suspicious event(s) detected</strong> (promotional ads, attendance-only, or disallowed groups).
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedCleanupIds(suspiciousItems.map(s => s.item.id));
+                      setCleanupModalOpen(true);
+                    }}
+                    style={{
+                      padding: "4px 10px",
+                      borderRadius: 6,
+                      background: "#d97706",
+                      color: "#ffffff",
+                      border: "none",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer"
+                    }}
+                  >
+                    Review & Clean Data
+                  </button>
+                </div>
+              )}
+
               {!collectorData?.groups || collectorData.groups.length === 0 ? (
                 <div style={{ textAlign: "center", padding: "16px", color: "#64748b", fontSize: 12 }}>
                   Configured allowed groups will appear here as soon as collector connects.
@@ -1219,10 +1313,11 @@ export default function Dashboard() {
                     <tr style={{ borderBottom: "1px solid #e2e8f0", color: "#64748b", textTransform: "uppercase", fontSize: 11 }}>
                       <th style={{ padding: "6px 8px" }}>Group Name</th>
                       <th style={{ padding: "6px 8px" }}>Status</th>
-                      <th style={{ padding: "6px 8px" }}>Messages Collected</th>
-                      <th style={{ padding: "6px 8px" }}>Last Processed</th>
-                      <th style={{ padding: "6px 8px" }}>Last Scan</th>
+                      <th style={{ padding: "6px 8px" }}>Messages (Proc / Scan)</th>
+                      <th style={{ padding: "6px 8px" }}>Last Scanned Cursor</th>
+                      <th style={{ padding: "6px 8px" }}>Last Academic Event</th>
                       <th style={{ padding: "6px 8px" }}>Backfill Status</th>
+                      <th style={{ padding: "6px 8px", textAlign: "right" }}>Dev / Admin</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1249,11 +1344,11 @@ export default function Dashboard() {
                             ({g.messagesScanned || 0} scanned)
                           </span>
                         </td>
-                        <td style={{ padding: "8px 8px", color: "#334155" }}>
-                          {formatDateTimeSafe(g.lastProcessedMessageTimestamp)}
+                        <td style={{ padding: "8px 8px", color: "#334155", fontSize: 11 }}>
+                          {formatDateTimeSafe(g.lastScannedMessageTimestamp || g.lastProcessedMessageTimestamp)}
                         </td>
-                        <td style={{ padding: "8px 8px", color: "#64748b" }}>
-                          {formatTimeSafe(g.lastScanTime)}
+                        <td style={{ padding: "8px 8px", color: "#334155", fontSize: 11 }}>
+                          {formatDateTimeSafe(g.lastProcessedAcademicMessageTimestamp || g.lastProcessedMessageTimestamp)}
                         </td>
                         <td style={{ padding: "8px 8px" }}>
                           <span style={{
@@ -1266,6 +1361,40 @@ export default function Dashboard() {
                           }}>
                             {g.backfillComplete ? "COMPLETED" : (g.status === "BACKFILLING" ? "IN PROGRESS" : "PENDING")}
                           </span>
+                        </td>
+                        <td style={{ padding: "8px 8px", textAlign: "right" }}>
+                          <button
+                            type="button"
+                            onClick={async () => {
+                              if (confirm(`Reset backfill for "${g.groupName}"?\n\nThis will clear the cursor and allow a full rescan from September 10, 2026 on the next scan.`)) {
+                                try {
+                                  const res = await fetch(`/api/collector/groups/${encodeURIComponent(g.groupName)}/reset`, { method: "POST" });
+                                  if (res.ok) {
+                                    alert(`Backfill reset for ${g.groupName}. Ready to rescan from September 10.`);
+                                    loadCollectorStats();
+                                  } else {
+                                    const err = await res.json();
+                                    alert(`Failed to reset: ${err.error || "Unknown error"}`);
+                                  }
+                                } catch (e: any) {
+                                  alert(`Error: ${e.message}`);
+                                }
+                              }
+                            }}
+                            style={{
+                              padding: "3px 8px",
+                              fontSize: 11,
+                              fontWeight: 600,
+                              borderRadius: 4,
+                              background: "#fee2e2",
+                              color: "#991b1b",
+                              border: "1px solid #fecdd3",
+                              cursor: "pointer"
+                            }}
+                            title="Admin Action: Clear cursor and reset backfill to September 10"
+                          >
+                            Reset Backfill
+                          </button>
                         </td>
                       </tr>
                     ))}
@@ -1995,6 +2124,28 @@ export default function Dashboard() {
 
                 {/* Prominent Metadata Cards */}
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", marginBottom: 14 }}>
+                  {/* Posted Date (WhatsApp message sent timestamp) */}
+                  {(item.sourceMessageDate || item.sourceMessageTimestamp) && (
+                    <div
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: 6,
+                        fontSize: 12,
+                        fontWeight: 600,
+                        padding: "5px 10px",
+                        borderRadius: 8,
+                        background: "#f8fafc",
+                        color: "#475569",
+                        border: "1px solid #e2e8f0"
+                      }}
+                      title="Date message was posted on WhatsApp"
+                    >
+                      <MessageSquare size={13} />
+                      <span>Posted: {formatCalendarDate(item.sourceMessageDate || item.sourceMessageTimestamp!.slice(0, 10))}</span>
+                    </div>
+                  )}
+
                   {/* Deadline display */}
                   {item.deadline && (
                     <div
@@ -2012,11 +2163,11 @@ export default function Dashboard() {
                       }}
                     >
                       <Clock size={14} />
-                      <span>{formatDeadlineDisplay(item.deadline, now)}</span>
+                      <span>Due: {formatDeadlineDisplay(item.deadline, now)}</span>
                     </div>
                   )}
 
-                  {/* Exam Date & Time display */}
+                  {/* Exam / Quiz / Event Date & Time display */}
                   {item.eventDate && (
                     <div
                       style={{
@@ -2033,10 +2184,32 @@ export default function Dashboard() {
                       }}
                     >
                       <Calendar size={14} />
-                      <span>{formatCalendarDate(item.eventDate)}</span>
+                      <span>
+                        {item.type === "QUIZ" ? "Quiz: " : (item.type === "EXAM" || item.type === "SLIP_TEST") ? "Exam: " : "Event: "}
+                        {formatCalendarDate(item.eventDate)}
+                      </span>
                       {item.eventTime && <span>· {item.eventTime}</span>}
                     </div>
                   )}
+
+                  {/* Reminder Scheduled indicator */}
+                  <div
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 5,
+                      fontSize: 12,
+                      fontWeight: 600,
+                      padding: "5px 9px",
+                      borderRadius: 8,
+                      background: "#faf5ff",
+                      color: "#7e22ce",
+                      border: "1px solid #e9d5ff"
+                    }}
+                  >
+                    <Bell size={12} />
+                    <span>Reminder scheduled</span>
+                  </div>
 
                   {/* Submission Link Button (Requested prominent [Open Submission]) */}
                   {item.submissionUrl && (
@@ -2236,6 +2409,210 @@ export default function Dashboard() {
         </div>
       )}
         </>
+      )}
+
+      {/* Reviewable Bad Data Cleanup Modal (Requirement 30) */}
+      {cleanupModalOpen && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          background: "rgba(15, 23, 42, 0.6)",
+          backdropFilter: "blur(4px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 99999,
+          padding: 20
+        }}>
+          <div style={{
+            background: "#ffffff",
+            borderRadius: 16,
+            maxWidth: 650,
+            width: "100%",
+            maxHeight: "85vh",
+            overflow: "hidden",
+            display: "flex",
+            flexDirection: "column",
+            boxShadow: "0 25px 50px -12px rgba(0, 0, 0, 0.25)"
+          }}>
+            {/* Modal Header */}
+            <div style={{
+              padding: "18px 24px",
+              borderBottom: "1px solid #e2e8f0",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center"
+            }}>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: "#0f172a" }}>
+                  Review & Clean Suspicious Events
+                </h3>
+                <p style={{ margin: "4px 0 0", fontSize: 13, color: "#64748b" }}>
+                  Review flagged events before deletion. Uncheck any legitimate items you wish to keep.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCleanupModalOpen(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  fontSize: 20,
+                  cursor: "pointer",
+                  color: "#64748b"
+                }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div style={{ padding: "18px 24px", overflowY: "auto", flex: 1 }}>
+              {cleanupMessage && (
+                <div style={{
+                  padding: 12,
+                  borderRadius: 8,
+                  background: "#dcfce7",
+                  color: "#15803d",
+                  fontWeight: 600,
+                  marginBottom: 14,
+                  fontSize: 13
+                }}>
+                  ✓ {cleanupMessage}
+                </div>
+              )}
+
+              {suspiciousItems.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "30px 0", color: "#64748b" }}>
+                  No suspicious events found in the database.
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#475569" }}>
+                      Found {suspiciousItems.length} candidate(s)
+                    </span>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCleanupIds(suspiciousItems.map(s => s.item.id))}
+                        style={{ fontSize: 11, color: "#2563eb", background: "none", border: "none", cursor: "pointer", fontWeight: 600 }}
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedCleanupIds([])}
+                        style={{ fontSize: 11, color: "#64748b", background: "none", border: "none", cursor: "pointer" }}
+                      >
+                        Deselect All
+                      </button>
+                    </div>
+                  </div>
+
+                  {suspiciousItems.map(({ item, reason }) => {
+                    const isSelected = selectedCleanupIds.includes(item.id);
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => {
+                          setSelectedCleanupIds(prev =>
+                            isSelected ? prev.filter(id => id !== item.id) : [...prev, item.id]
+                          );
+                        }}
+                        style={{
+                          padding: "12px 14px",
+                          borderRadius: 10,
+                          border: `1px solid ${isSelected ? "#fca5a5" : "#e2e8f0"}`,
+                          background: isSelected ? "#fff5f5" : "#f8fafc",
+                          cursor: "pointer",
+                          display: "flex",
+                          gap: 12,
+                          alignItems: "flex-start"
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => {}}
+                          style={{ marginTop: 3, cursor: "pointer" }}
+                        />
+                        <div style={{ flex: 1 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                            <span style={{ fontWeight: 700, fontSize: 14, color: "#0f172a" }}>
+                              {item.title}
+                            </span>
+                            <span style={{
+                              fontSize: 10,
+                              fontWeight: 700,
+                              padding: "2px 6px",
+                              borderRadius: 4,
+                              background: "#fee2e2",
+                              color: "#991b1b"
+                            }}>
+                              {reason}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                            {item.sourceGroup && <span>Group: {item.sourceGroup} · </span>}
+                            <span>Posted: {formatCalendarDate(item.sourceMessageDate || item.createdAt.slice(0, 10))}</span>
+                          </div>
+                          <div style={{ fontSize: 12, color: "#334155", marginTop: 4, fontStyle: "italic" }}>
+                            "{item.description.slice(0, 120)}{item.description.length > 120 ? "..." : ""}"
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Modal Actions */}
+            <div style={{
+              padding: "14px 24px",
+              borderTop: "1px solid #e2e8f0",
+              display: "flex",
+              justifyContent: "flex-end",
+              gap: 10,
+              background: "#f8fafc"
+            }}>
+              <button
+                type="button"
+                onClick={() => setCleanupModalOpen(false)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: "1px solid #cbd5e1",
+                  background: "#ffffff",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  color: "#475569",
+                  cursor: "pointer"
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={selectedCleanupIds.length === 0 || isCleaningUp}
+                onClick={() => handleDeleteSuspiciousEvents(selectedCleanupIds)}
+                style={{
+                  padding: "8px 16px",
+                  borderRadius: 8,
+                  border: "none",
+                  background: selectedCleanupIds.length === 0 ? "#cbd5e1" : "#dc2626",
+                  fontSize: 13,
+                  fontWeight: 700,
+                  color: "#ffffff",
+                  cursor: selectedCleanupIds.length === 0 || isCleaningUp ? "not-allowed" : "pointer"
+                }}
+              >
+                {isCleaningUp ? "Deleting..." : `Delete ${selectedCleanupIds.length} Selected Events`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -65,7 +65,9 @@
     errors: 0,
     failedMessageCount: 0,
     errorReason: null,
-    lastProcessedTimestamp: null
+    lastProcessedTimestamp: null,
+    lastScannedTimestamp: null,
+    lastProcessedAcademicTimestamp: null
   };
 
   let scanCompleteTimer = null;
@@ -147,14 +149,19 @@
       "#main header [data-testid*='group']",
       "#main header [data-icon='community']",
       "#main header [data-testid='community']",
-      "#main header [data-icon='announcement']",
+      "#main header [data-icon*='announcement']",
+      "#main header [data-testid*='announcement']",
+      "#main header [data-icon*='channel']",
+      "#main header [data-testid*='channel']",
       "#main header [aria-label*='group' i]",
-      "#main header [aria-label*='community' i]"
+      "#main header [aria-label*='community' i]",
+      "#main header [aria-label*='announcement' i]",
+      "#main header [aria-label*='channel' i]"
     ],
     userIcons: [
       "#main header [data-icon='default-user']",
       "#main header [data-testid='default-user']",
-      "#main header [aria-label*='profile' i]"
+      "#main header [data-icon='avatar-user']"
     ],
     messageContainers: [
       "div[data-id]",
@@ -206,39 +213,61 @@
     return null;
   }
 
-  function isGroupChat() {
+  function isGroupChat(chatName) {
     const mainEl = document.getElementById("main");
     if (!mainEl) return false;
 
-    // Header info button
+    const currentTitle = chatName || getActiveChatName() || "";
+    const norm = normalizeGroupName(currentTitle);
+
+    // =========================================================================
+    // TIER 1 — Strong positive group / announcement evidence
+    // =========================================================================
+
+    // 1a: Announcement group composer UI ("Only admins can send messages")
+    try {
+      const footerEl = mainEl.querySelector("footer") || mainEl.querySelector("[data-testid='conversation-footer']");
+      const footerText = footerEl ? (footerEl.textContent || "") : "";
+      const isReadOnlyComposer =
+        /only (?:community )?admins can send messages/i.test(footerText) ||
+        /only (?:community )?admins can send messages/i.test(mainEl.textContent || "") ||
+        Boolean(mainEl.querySelector("[data-testid*='read-only']")) ||
+        Boolean(mainEl.querySelector("[data-testid*='announcement-banner']"));
+
+      if (isReadOnlyComposer) {
+        log(`Group detected via announcement composer notice: "Only admins can send messages" in "${currentTitle}"`);
+        return true;
+      }
+    } catch (_) {}
+
+    // 1b: Header conversation info button (aria-label / title)
     for (const sel of SELECTORS.headerInfoButton) {
       try {
         const btn = mainEl.querySelector(sel);
         if (btn) {
           const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").toLowerCase();
-          if (label.includes("group info") || label.includes("community info") || label.includes("group details")) {
+          if (
+            label.includes("group info") ||
+            label.includes("community info") ||
+            label.includes("group details") ||
+            label.includes("community details") ||
+            label.includes("announcement") ||
+            label.includes("channel")
+          ) {
             return true;
-          }
-          if (label.includes("contact info") || label.includes("profile info")) {
-            return false;
           }
         }
       } catch (_) {}
     }
 
-    // Group icons vs user icons
+    // 1c: Group, community, or announcement icons
     for (const sel of SELECTORS.groupIcons) {
       try {
         if (mainEl.querySelector(sel)) return true;
       } catch (_) {}
     }
-    for (const sel of SELECTORS.userIcons) {
-      try {
-        if (mainEl.querySelector(sel)) return false;
-      } catch (_) {}
-    }
 
-    // Subtitle indicators
+    // 1d: Subtitle group indicators
     for (const sel of SELECTORS.chatSubtitle) {
       try {
         const subEl = mainEl.querySelector(sel);
@@ -246,17 +275,11 @@
           const subText = (subEl.getAttribute("title") || subEl.textContent || "").toLowerCase().trim();
           if (subText) {
             if (
-              subText === "online" ||
-              subText.startsWith("last seen") ||
-              subText === "typing..." ||
-              subText === "recording audio..."
-            ) {
-              return false;
-            }
-            if (
               subText.includes("participants") ||
               subText.includes("members") ||
               subText.includes("group info") ||
+              subText.includes("tap here for group info") ||
+              subText.includes("click here for group info") ||
               subText.includes("community") ||
               subText.includes("announcement")
             ) {
@@ -270,7 +293,7 @@
       } catch (_) {}
     }
 
-    // Author headers in bubbles
+    // 1e: Author headers in message bubbles
     for (const sel of SELECTORS.authorHeaders) {
       try {
         const authorEl = mainEl.querySelector(sel);
@@ -280,6 +303,60 @@
       } catch (_) {}
     }
 
+    // =========================================================================
+    // TIER 2 — Allowed-group-name match
+    // If normalized current chat title EXACTLY matches one of the 6 allowed groups:
+    // → classify as GROUP.
+    // =========================================================================
+    const isAllowedGroupTitle = CONFIG.allowedGroups.some(g => normalizeGroupName(g) === norm);
+    if (isAllowedGroupTitle) {
+      log(`Group detected via allowed group title match: "${currentTitle}"`);
+      return true;
+    }
+
+    // =========================================================================
+    // TIER 3 — Personal-chat evidence
+    // Only classify as PERSONAL when there is strong personal evidence
+    // =========================================================================
+    // Contact info header
+    for (const sel of SELECTORS.headerInfoButton) {
+      try {
+        const btn = mainEl.querySelector(sel);
+        if (btn) {
+          const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").toLowerCase();
+          if (label.includes("contact info") || label.includes("profile info")) {
+            return false;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Subtitle personal status
+    for (const sel of SELECTORS.chatSubtitle) {
+      try {
+        const subEl = mainEl.querySelector(sel);
+        if (subEl) {
+          const subText = (subEl.getAttribute("title") || subEl.textContent || "").toLowerCase().trim();
+          if (
+            subText === "online" ||
+            subText.startsWith("last seen") ||
+            subText === "typing..." ||
+            subText === "recording audio..."
+          ) {
+            return false;
+          }
+        }
+      } catch (_) {}
+    }
+
+    // User avatar icons
+    for (const sel of SELECTORS.userIcons) {
+      try {
+        if (mainEl.querySelector(sel)) return false;
+      } catch (_) {}
+    }
+
+    // Default: classify 1-to-1 personal chat as false
     return false;
   }
 
@@ -726,7 +803,7 @@
       return;
     }
 
-    if (!isGroupChat()) {
+    if (!isGroupChat(groupName)) {
       setCollectorState("PERSONAL_IGNORED", groupName);
       return;
     }
@@ -765,16 +842,23 @@
       await scrollUpToBackfillBoundary();
       if (currentScanStats.scanId !== scanId) return;
     } else {
-      log(`Group "${groupName}" resuming from saved cursor:`, groupState.lastProcessedMessageTimestamp);
+      log(`Group "${groupName}" already backfilled. Resuming from scan cursor:`, groupState.lastScannedMessageTimestamp || groupState.lastProcessedMessageTimestamp);
     }
 
     const renderedMessages = getRenderedMessages();
     currentScanStats.messagesScanned = renderedMessages.length;
-    currentScanStats.lastProcessedTimestamp = groupState?.lastProcessedMessageTimestamp || null;
+
+    const scanCursor = groupState?.lastScannedMessageTimestamp || groupState?.lastProcessedMessageTimestamp || null;
+    let newestScannedTimestamp = scanCursor;
+    let newestScannedId = groupState?.lastScannedMessageId || groupState?.lastProcessedMessageId || null;
+    let newestProcessedAcademicTimestamp = groupState?.lastProcessedAcademicMessageTimestamp || groupState?.lastProcessedMessageTimestamp || null;
+    let newestProcessedAcademicId = groupState?.lastProcessedAcademicMessageId || groupState?.lastProcessedMessageId || null;
+
+    currentScanStats.lastProcessedTimestamp = newestProcessedAcademicTimestamp || newestScannedTimestamp;
+    currentScanStats.lastScannedTimestamp = newestScannedTimestamp;
+    currentScanStats.lastProcessedAcademicTimestamp = newestProcessedAcademicTimestamp;
     updateStatusBadge();
 
-    let newestProcessedTimestamp = groupState?.lastProcessedMessageTimestamp || null;
-    let newestProcessedId = groupState?.lastProcessedMessageId || null;
     let scanError = null;
 
     for (const msg of renderedMessages) {
@@ -790,26 +874,32 @@
         continue;
       }
 
-      // Cursor check: skip already processed messages from previous scans
-      if (groupState?.lastProcessedMessageTimestamp && !isNewerThanCursor(msg.timestamp, groupState.lastProcessedMessageTimestamp)) {
+      // Cursor check: skip already scanned messages from previous scans
+      if (scanCursor && !isNewerThanCursor(msg.timestamp, scanCursor)) {
         continue;
       }
 
       // Deduplication check
       if (isDuplicate(msg.id, msg.text)) {
         currentScanStats.duplicates++;
+        newestScannedTimestamp = msg.timestamp;
+        if (msg.id) newestScannedId = msg.id;
+        currentScanStats.lastScannedTimestamp = msg.timestamp;
+        currentScanStats.lastProcessedTimestamp = newestProcessedAcademicTimestamp || newestScannedTimestamp;
         updateStatusBadge();
         continue;
       }
 
       markAsProcessed(msg.id, msg.text);
 
-      // Local relevance filter
+      // Local relevance filter (chatter, attendance-only, advertisements)
       if (!passesLocalFilter(msg.text)) {
         currentScanStats.messagesIgnored++;
-        newestProcessedTimestamp = msg.timestamp;
-        newestProcessedId = msg.id || newestProcessedId;
-        currentScanStats.lastProcessedTimestamp = msg.timestamp;
+        // Ignored messages advance the scan cursor
+        newestScannedTimestamp = msg.timestamp;
+        if (msg.id) newestScannedId = msg.id;
+        currentScanStats.lastScannedTimestamp = msg.timestamp;
+        currentScanStats.lastProcessedTimestamp = newestProcessedAcademicTimestamp || newestScannedTimestamp;
         updateStatusBadge();
         continue;
       }
@@ -824,23 +914,31 @@
           sourceMessageId: msg.id || undefined
         });
 
-        // Increment processed counter for THIS scan
-        currentScanStats.academicMessages++;
-        currentScanStats.lastProcessedTimestamp = msg.timestamp;
-        newestProcessedTimestamp = msg.timestamp;
-        newestProcessedId = msg.id || newestProcessedId;
+        // Examination succeeded - advance scan cursor
+        newestScannedTimestamp = msg.timestamp;
+        if (msg.id) newestScannedId = msg.id;
+        currentScanStats.lastScannedTimestamp = msg.timestamp;
 
         const action = res?.data?.action;
-        if (action === "CREATED") {
-          currentScanStats.eventsCreated++;
-        } else if (action === "UPDATED") {
-          currentScanStats.eventsUpdated++;
+        if (action === "CREATED" || action === "UPDATED") {
+          currentScanStats.academicMessages++;
+          newestProcessedAcademicTimestamp = msg.timestamp;
+          if (msg.id) newestProcessedAcademicId = msg.id;
+          currentScanStats.lastProcessedAcademicTimestamp = msg.timestamp;
+          currentScanStats.lastProcessedTimestamp = msg.timestamp;
+
+          if (action === "CREATED") {
+            currentScanStats.eventsCreated++;
+          } else {
+            currentScanStats.eventsUpdated++;
+          }
         } else if (action === "IGNORED_DUPLICATE") {
           currentScanStats.duplicates++;
         } else if (action === "NON_ACADEMIC") {
           currentScanStats.messagesIgnored++;
         }
 
+        currentScanStats.lastProcessedTimestamp = newestProcessedAcademicTimestamp || newestScannedTimestamp;
         updateStatusBadge();
 
         await reportCollectorStatus({
@@ -877,20 +975,25 @@
       setCollectorState("ERROR", groupName, {
         errorReason: currentScanStats.errorReason,
         failedMessageCount: currentScanStats.failedMessageCount,
-        lastProcessedTimestamp: newestProcessedTimestamp
+        lastProcessedTimestamp: newestProcessedAcademicTimestamp || newestScannedTimestamp
       });
 
       // Update cursor with error, not past failed message
       await updateGroupCursor(groupName, {
         groupName,
-        lastProcessedMessageTimestamp: newestProcessedTimestamp,
-        lastProcessedMessageId: newestProcessedId,
+        lastScannedMessageTimestamp: newestScannedTimestamp,
+        lastScannedMessageId: newestScannedId,
+        lastProcessedAcademicMessageTimestamp: newestProcessedAcademicTimestamp,
+        lastProcessedAcademicMessageId: newestProcessedAcademicId,
+        lastProcessedMessageTimestamp: newestProcessedAcademicTimestamp || newestScannedTimestamp,
+        lastProcessedMessageId: newestProcessedAcademicId || newestScannedId,
         backfillComplete: groupState?.backfillComplete || false,
         status: "ERROR",
         lastError: currentScanStats.errorReason,
         messagesScannedIncrement: currentScanStats.messagesScanned,
         messagesProcessedIncrement: currentScanStats.academicMessages,
-        messagesIgnoredIncrement: currentScanStats.messagesIgnored
+        messagesIgnoredIncrement: currentScanStats.messagesIgnored,
+        messagesFailedIncrement: currentScanStats.failedMessageCount
       });
 
       await reportCollectorStatus({
@@ -917,14 +1020,19 @@
     // Safely update cursor AFTER all processing finishes
     await updateGroupCursor(groupName, {
       groupName,
-      lastProcessedMessageTimestamp: newestProcessedTimestamp,
-      lastProcessedMessageId: newestProcessedId,
+      lastScannedMessageTimestamp: newestScannedTimestamp,
+      lastScannedMessageId: newestScannedId,
+      lastProcessedAcademicMessageTimestamp: newestProcessedAcademicTimestamp,
+      lastProcessedAcademicMessageId: newestProcessedAcademicId,
+      lastProcessedMessageTimestamp: newestProcessedAcademicTimestamp || newestScannedTimestamp,
+      lastProcessedMessageId: newestProcessedAcademicId || newestScannedId,
       backfillComplete: true,
       status: "MONITORING",
       lastError: null,
       messagesScannedIncrement: currentScanStats.messagesScanned,
       messagesProcessedIncrement: currentScanStats.academicMessages,
-      messagesIgnoredIncrement: currentScanStats.messagesIgnored
+      messagesIgnoredIncrement: currentScanStats.messagesIgnored,
+      messagesFailedIncrement: 0
     });
 
     if (currentScanStats.scanId !== scanId) return;
@@ -987,7 +1095,7 @@
       return;
     }
 
-    const isGroup = isGroupChat();
+    const isGroup = isGroupChat(activeChat);
     const chatChanged = activeChat !== currentActiveChat || isGroup !== currentIsGroup;
 
     if (chatChanged) {
@@ -1098,6 +1206,10 @@
 
                   updateGroupCursor(currentActiveChat, {
                     groupName: currentActiveChat,
+                    lastScannedMessageTimestamp: details.timestamp,
+                    lastScannedMessageId: details.id || null,
+                    lastProcessedAcademicMessageTimestamp: details.timestamp,
+                    lastProcessedAcademicMessageId: details.id || null,
                     lastProcessedMessageTimestamp: details.timestamp,
                     lastProcessedMessageId: details.id || null,
                     backfillComplete: true,

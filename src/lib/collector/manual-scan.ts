@@ -12,6 +12,10 @@ export interface RawScanMessage {
 
 export interface GroupCursorState {
   groupName: string;
+  lastScannedMessageTimestamp?: string | null;
+  lastScannedMessageId?: string | null;
+  lastProcessedAcademicMessageTimestamp?: string | null;
+  lastProcessedAcademicMessageId?: string | null;
   lastProcessedMessageTimestamp?: string | null;
   lastProcessedMessageId?: string | null;
   backfillComplete?: boolean;
@@ -32,6 +36,8 @@ export interface ManualScanStats {
   failedMessageCount: number;
   errorReason: string | null;
   lastProcessedTimestamp: string | null;
+  lastScannedTimestamp?: string | null;
+  lastProcessedAcademicTimestamp?: string | null;
 }
 
 export interface ScanRunOptions {
@@ -49,6 +55,10 @@ export interface ScanRunOptions {
   }) => Promise<{ action: "CREATED" | "UPDATED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC" }>;
   updateCursor?: (payload: {
     groupName: string;
+    lastScannedMessageTimestamp?: string | null;
+    lastScannedMessageId?: string | null;
+    lastProcessedAcademicMessageTimestamp?: string | null;
+    lastProcessedAcademicMessageId?: string | null;
     lastProcessedMessageTimestamp?: string | null;
     lastProcessedMessageId?: string | null;
     backfillComplete: boolean;
@@ -57,6 +67,7 @@ export interface ScanRunOptions {
     messagesScannedIncrement: number;
     messagesProcessedIncrement: number;
     messagesIgnoredIncrement: number;
+    messagesFailedIncrement?: number;
   }) => Promise<void>;
   onProgress?: (stats: ManualScanStats) => void;
   shouldAbort?: () => boolean;
@@ -178,8 +189,12 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
   const seenIds = new Set<string>();
   const seenHashes = new Set<string>();
 
-  let newestProcessedTimestamp: string | null = cursorState?.lastProcessedMessageTimestamp || null;
-  let newestProcessedId: string | null = cursorState?.lastProcessedMessageId || null;
+  // Determine starting cursors
+  const scanCursor = cursorState?.lastScannedMessageTimestamp || cursorState?.lastProcessedMessageTimestamp || null;
+  let newestScannedTimestamp: string | null = scanCursor;
+  let newestScannedId: string | null = cursorState?.lastScannedMessageId || cursorState?.lastProcessedMessageId || null;
+  let newestProcessedAcademicTimestamp: string | null = cursorState?.lastProcessedAcademicMessageTimestamp || cursorState?.lastProcessedMessageTimestamp || null;
+  let newestProcessedAcademicId: string | null = cursorState?.lastProcessedAcademicMessageId || cursorState?.lastProcessedMessageId || null;
   let scanError: Error | null = null;
 
   for (const msg of sortedMessages) {
@@ -194,8 +209,8 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
       continue;
     }
 
-    // 2. Cursor check: skip already processed messages
-    if (cursorState?.lastProcessedMessageTimestamp && !isMessageNewerThanCursor(msg.timestamp, cursorState.lastProcessedMessageTimestamp)) {
+    // 2. Cursor check: skip already scanned messages
+    if (scanCursor && !isMessageNewerThanCursor(msg.timestamp, scanCursor)) {
       continue;
     }
 
@@ -203,6 +218,9 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
     const textHash = hashSimple(msg.text);
     if ((msg.id && seenIds.has(msg.id)) || seenHashes.has(textHash)) {
       stats.duplicates++;
+      newestScannedTimestamp = msg.timestamp;
+      if (msg.id) newestScannedId = msg.id;
+      stats.lastScannedTimestamp = msg.timestamp;
       onProgress?.(stats);
       continue;
     }
@@ -210,14 +228,14 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
     if (msg.id) seenIds.add(msg.id);
     seenHashes.add(textHash);
 
-    // 4. Academic Relevance Filter
+    // 4. Academic Relevance Filter (chatter, attendance-only, advertisements)
     const relevance = classifyAcademicMessage(msg.text);
     if (!relevance.shouldProcess) {
       stats.messagesIgnored++;
-      // Safe to advance cursor past non-academic chatter
-      newestProcessedTimestamp = msg.timestamp;
-      newestProcessedId = msg.id || newestProcessedId;
-      stats.lastProcessedTimestamp = msg.timestamp;
+      // Ignored messages still advance the scan cursor
+      newestScannedTimestamp = msg.timestamp;
+      if (msg.id) newestScannedId = msg.id;
+      stats.lastScannedTimestamp = msg.timestamp;
       onProgress?.(stats);
       continue;
     }
@@ -236,15 +254,23 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
         sourceMessageId: msg.id
       });
 
-      stats.academicMessages++;
-      stats.lastProcessedTimestamp = msg.timestamp;
-      newestProcessedTimestamp = msg.timestamp;
-      newestProcessedId = msg.id || newestProcessedId;
+      // Examination succeeded - advance scan cursor
+      newestScannedTimestamp = msg.timestamp;
+      if (msg.id) newestScannedId = msg.id;
+      stats.lastScannedTimestamp = msg.timestamp;
 
-      if (res.action === "CREATED") {
-        stats.eventsCreated++;
-      } else if (res.action === "UPDATED") {
-        stats.eventsUpdated++;
+      if (res.action === "CREATED" || res.action === "UPDATED") {
+        stats.academicMessages++;
+        newestProcessedAcademicTimestamp = msg.timestamp;
+        if (msg.id) newestProcessedAcademicId = msg.id;
+        stats.lastProcessedAcademicTimestamp = msg.timestamp;
+        stats.lastProcessedTimestamp = msg.timestamp;
+
+        if (res.action === "CREATED") {
+          stats.eventsCreated++;
+        } else {
+          stats.eventsUpdated++;
+        }
       } else if (res.action === "IGNORED_DUPLICATE") {
         stats.duplicates++;
       } else if (res.action === "NON_ACADEMIC") {
@@ -273,14 +299,19 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
       try {
         await updateCursor({
           groupName,
-          lastProcessedMessageTimestamp: newestProcessedTimestamp,
-          lastProcessedMessageId: newestProcessedId,
+          lastScannedMessageTimestamp: newestScannedTimestamp,
+          lastScannedMessageId: newestScannedId,
+          lastProcessedAcademicMessageTimestamp: newestProcessedAcademicTimestamp,
+          lastProcessedAcademicMessageId: newestProcessedAcademicId,
+          lastProcessedMessageTimestamp: newestProcessedAcademicTimestamp || newestScannedTimestamp,
+          lastProcessedMessageId: newestProcessedAcademicId || newestScannedId,
           backfillComplete: cursorState?.backfillComplete || false,
           status: "ERROR",
           lastError: stats.errorReason,
           messagesScannedIncrement: stats.messagesScanned,
           messagesProcessedIncrement: stats.academicMessages,
-          messagesIgnoredIncrement: stats.messagesIgnored
+          messagesIgnoredIncrement: stats.messagesIgnored,
+          messagesFailedIncrement: stats.failedMessageCount
         });
       } catch (_) {}
     }
@@ -292,14 +323,19 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
   if (updateCursor) {
     await updateCursor({
       groupName,
-      lastProcessedMessageTimestamp: newestProcessedTimestamp,
-      lastProcessedMessageId: newestProcessedId,
+      lastScannedMessageTimestamp: newestScannedTimestamp,
+      lastScannedMessageId: newestScannedId,
+      lastProcessedAcademicMessageTimestamp: newestProcessedAcademicTimestamp,
+      lastProcessedAcademicMessageId: newestProcessedAcademicId,
+      lastProcessedMessageTimestamp: newestProcessedAcademicTimestamp || newestScannedTimestamp,
+      lastProcessedMessageId: newestProcessedAcademicId || newestScannedId,
       backfillComplete: true,
       status: "MONITORING",
       lastError: null,
       messagesScannedIncrement: stats.messagesScanned,
       messagesProcessedIncrement: stats.academicMessages,
-      messagesIgnoredIncrement: stats.messagesIgnored
+      messagesIgnoredIncrement: stats.messagesIgnored,
+      messagesFailedIncrement: 0
     });
   }
 
@@ -311,6 +347,9 @@ export async function executeManualGroupScan(options: ScanRunOptions): Promise<M
   // Scan Complete ONLY appears after all messages processed and cursor updated
   stats.scanStatus = "COMPLETE";
   stats.scanCompletedAt = new Date().toISOString();
+  stats.lastProcessedTimestamp = newestProcessedAcademicTimestamp || newestScannedTimestamp;
+  stats.lastScannedTimestamp = newestScannedTimestamp;
+  stats.lastProcessedAcademicTimestamp = newestProcessedAcademicTimestamp;
   onProgress?.(stats);
 
   return stats;

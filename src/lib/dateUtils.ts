@@ -223,6 +223,8 @@ export interface ExtractedOccurrenceDate {
   isRelative: boolean;
 }
 
+const MONTH_REGEX_PATTERN = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+
 /**
  * Extract multiple dates from text, preserving sequence and resolving relative references
  */
@@ -232,8 +234,53 @@ export function extractMultipleDates(
 ): ExtractedOccurrenceDate[] {
   const results: ExtractedOccurrenceDate[] = [];
   const t = text.trim();
+  const currentYear = referenceDate.getFullYear();
 
-  // Pattern for relative day mentions: (this|next)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+[\d:.]+\s*(?:am|pm)?)?
+  // 1. Calendar dates with multiple days in same month: e.g. "Oct 21 and 22", "October 21, 22"
+  const multiDayMonthRegex = new RegExp(`\\b(${MONTH_REGEX_PATTERN})\\s+(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:and|&|,)\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+(\\d{4}))?\\b`, "gi");
+  let mdmMatch: RegExpExecArray | null;
+  while ((mdmMatch = multiDayMonthRegex.exec(t)) !== null) {
+    const month = MONTH_MAP[mdmMatch[1].toLowerCase()];
+    const d1 = parseInt(mdmMatch[2], 10);
+    const d2 = parseInt(mdmMatch[3], 10);
+    const year = mdmMatch[4] ? parseInt(mdmMatch[4], 10) : currentYear;
+    if (month && d1 >= 1 && d1 <= 31 && d2 >= 1 && d2 <= 31) {
+      results.push({
+        dateStr: `${year}-${pad2(month)}-${pad2(d1)}`,
+        rawDateSnippet: `${mdmMatch[1]} ${d1}`,
+        dayName: `${mdmMatch[1]} ${d1}`,
+        isRelative: false
+      });
+      results.push({
+        dateStr: `${year}-${pad2(month)}-${pad2(d2)}`,
+        rawDateSnippet: `${mdmMatch[1]} ${d2}`,
+        dayName: `${mdmMatch[1]} ${d2}`,
+        isRelative: false
+      });
+    }
+  }
+
+  // 2. Calendar dates with single day and month: "Oct 8th", "oct 15th", "8 Oct", "October 5"
+  const monthDayRegex = new RegExp(`\\b(${MONTH_REGEX_PATTERN})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+(\\d{4}))?\\b`, "gi");
+  let mdMatch: RegExpExecArray | null;
+  while ((mdMatch = monthDayRegex.exec(t)) !== null) {
+    const month = MONTH_MAP[mdMatch[1].toLowerCase()];
+    const day = parseInt(mdMatch[2], 10);
+    const year = mdMatch[3] ? parseInt(mdMatch[3], 10) : currentYear;
+    if (month && day >= 1 && day <= 31) {
+      const dateStr = `${year}-${pad2(month)}-${pad2(day)}`;
+      if (!results.some(r => r.dateStr === dateStr)) {
+        results.push({
+          dateStr,
+          rawDateSnippet: mdMatch[0],
+          dayName: mdMatch[0],
+          isRelative: false
+        });
+      }
+    }
+  }
+
+  // 3. Day of week mentions: (this|next)? (monday|tuesday...)
   const dayPattern = /\b(?:(this|next)\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b(?:\s+(?:at|by|before)\s*(\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)?))?/gi;
 
   let lastDate: Date | undefined;
@@ -250,18 +297,21 @@ export function extractMultipleDates(
 
     const timeStr = timeRaw ? extractTimeString(timeRaw) : undefined;
     const fullSnippet = match[0].trim();
+    const dateStr = toLocalDateString(concrete);
 
-    // Avoid duplicate identical dates in the exact same index
-    results.push({
-      dateStr: toLocalDateString(concrete),
-      timeStr,
-      rawDateSnippet: fullSnippet,
-      dayName: dayName.charAt(0).toUpperCase() + dayName.slice(1).toLowerCase(),
-      isRelative: true
-    });
+    if (!results.some(r => r.dateStr === dateStr)) {
+      results.push({
+        dateStr,
+        timeStr,
+        rawDateSnippet: fullSnippet,
+        dayName: dayName.charAt(0).toUpperCase() + dayName.slice(1).toLowerCase(),
+        isRelative: true
+      });
+    }
   }
 
-  return results;
+  // Sort chronologically
+  return results.sort((a, b) => new Date(a.dateStr).getTime() - new Date(b.dateStr).getTime());
 }
 
 /**
@@ -359,25 +409,34 @@ export function extractDateString(
     }
   }
 
-  // 6. Named month format: "30 Sep 2026", "30th September", "3 October", "Oct 3"
-  const dayMonthMatch = t.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:\s+(\d{4}))?\b/) ??
-                        t.match(/\b([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?\b/);
-
-  if (dayMonthMatch) {
-    let day: number;
-    let monthWord: string;
-    let year: number;
-
-    if (/^\d/.test(dayMonthMatch[1])) {
-      day = parseInt(dayMonthMatch[1], 10);
-      monthWord = dayMonthMatch[2].toLowerCase();
-      year = dayMonthMatch[3] ? parseInt(dayMonthMatch[3], 10) : currentYear;
-    } else {
-      monthWord = dayMonthMatch[1].toLowerCase();
-      day = parseInt(dayMonthMatch[2], 10);
-      year = dayMonthMatch[3] ? parseInt(dayMonthMatch[3], 10) : currentYear;
+  // 6. Named month format: "30 Sep 2026", "30th September", "3 October", "Oct 3", "oct 5", "Oct 8th"
+  const MONTH_PATTERN = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+  
+  // Format 6a: Month followed by Day: e.g. "Oct 5", "October 8th", "oct 5 - portions"
+  const monthDayRegex = new RegExp(`\\b(${MONTH_PATTERN})\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:\\s+(\\d{4}))?\\b`, "i");
+  const mdMatch = t.match(monthDayRegex);
+  if (mdMatch) {
+    const monthWord = mdMatch[1].toLowerCase();
+    const day = parseInt(mdMatch[2], 10);
+    const year = mdMatch[3] ? parseInt(mdMatch[3], 10) : currentYear;
+    const monthNum = MONTH_MAP[monthWord];
+    if (monthNum && day >= 1 && day <= 31) {
+      return {
+        dateStr: `${year}-${pad2(monthNum)}-${pad2(day)}`,
+        timeStr: extractTimeString(t),
+        isRelative: false,
+        confidence: "HIGH"
+      };
     }
+  }
 
+  // Format 6b: Day followed by Month: e.g. "30 Sep 2026", "30th September", "5 oct"
+  const dayMonthRegex = new RegExp(`\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+(?:of\\s+)?(${MONTH_PATTERN})(?:\\s+(\\d{4}))?\\b`, "i");
+  const dmMatch = t.match(dayMonthRegex);
+  if (dmMatch) {
+    const day = parseInt(dmMatch[1], 10);
+    const monthWord = dmMatch[2].toLowerCase();
+    const year = dmMatch[3] ? parseInt(dmMatch[3], 10) : currentYear;
     const monthNum = MONTH_MAP[monthWord];
     if (monthNum && day >= 1 && day <= 31) {
       return {
@@ -404,7 +463,31 @@ export function extractDateString(
 }
 
 /**
- * Format deadline with humanized status
+ * Format hours & minutes into a deterministic "HH:MM AM/PM" string
+ * guaranteed to produce identical output on Node.js server SSR and all browser clients.
+ */
+export function formatTimeDeterministic(d: Date): string {
+  let hours = d.getHours();
+  const minutes = d.getMinutes();
+  const meridian = hours >= 12 ? "PM" : "AM";
+  hours = hours % 12;
+  if (hours === 0) hours = 12;
+  const padMin = minutes < 10 ? `0${minutes}` : `${minutes}`;
+  return `${hours}:${padMin} ${meridian}`;
+}
+
+/**
+ * Format date & time into a deterministic string e.g. "25 Sep 2026, 11:35 AM"
+ */
+export function formatDateTimeDeterministic(d: Date): string {
+  const day = d.getDate();
+  const month = MONTH_NAMES[d.getMonth()];
+  const year = d.getFullYear();
+  return `${day} ${month} ${year}, ${formatTimeDeterministic(d)}`;
+}
+
+/**
+ * Format deadline with humanized status using deterministic time formatting
  */
 export function formatDeadlineDisplay(deadlineIso?: string, referenceDate: Date = new Date()): string {
   if (!deadlineIso) return "";
@@ -418,7 +501,7 @@ export function formatDeadlineDisplay(deadlineIso?: string, referenceDate: Date 
   tomorrow.setDate(tomorrow.getDate() + 1);
   const tomorrowStr = toLocalDateString(tomorrow);
 
-  const timeFormatted = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const timeFormatted = formatTimeDeterministic(d);
 
   if (dateStr === todayStr) {
     return `Today at ${timeFormatted}`;

@@ -80,6 +80,16 @@ export function mapAcademicItemToNotionProperties(item: AcademicItem): Record<st
     };
   }
 
+  // Posted Date (WhatsApp message date)
+  const postedDate = item.sourceMessageDate || (item.sourceMessageTimestamp ? item.sourceMessageTimestamp.slice(0, 10) : undefined);
+  if (postedDate && /^\d{4}-\d{2}-\d{2}$/.test(postedDate)) {
+    properties["Posted Date"] = {
+      date: {
+        start: postedDate
+      }
+    };
+  }
+
   // Deadline
   if (item.deadline) {
     const cleanDeadline = item.deadline.slice(0, 19);
@@ -88,6 +98,21 @@ export function mapAcademicItemToNotionProperties(item: AcademicItem): Record<st
         start: cleanDeadline
       }
     };
+
+    if (item.deadline.includes("T")) {
+      const timePart = item.deadline.split("T")[1]?.slice(0, 5);
+      if (timePart) {
+        properties["Deadline Time"] = {
+          rich_text: [
+            {
+              text: {
+                content: timePart
+              }
+            }
+          ]
+        };
+      }
+    }
   }
 
   // Submission Link (prominent URL)

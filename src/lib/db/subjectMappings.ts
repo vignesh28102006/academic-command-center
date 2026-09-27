@@ -17,14 +17,27 @@ const defaultMappings: Record<string, string> = {
 
 const inMemoryMappings: Map<string, string> = new Map(Object.entries(defaultMappings));
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function matchesCourseCode(text: string, code: string): boolean {
+  if (!text || !code) return false;
+  try {
+    const escaped = escapeRegExp(code.trim());
+    const regex = new RegExp(`(?:^|\\b|\\W)${escaped}(?:$|\\b|\\W)`, "i");
+    return regex.test(text);
+  } catch {
+    return text.toLowerCase().includes(code.toLowerCase());
+  }
+}
+
 export async function resolveSubjectCode(text: string): Promise<string | null> {
   const supabase = getSupabaseClient();
-  const upper = text.toUpperCase();
 
   // 1. Check in-memory / defaults first
   for (const [code, subject] of Array.from(inMemoryMappings.entries())) {
-    const codeRegex = new RegExp(`\\b${code}\\b`, "i");
-    if (codeRegex.test(text)) {
+    if (matchesCourseCode(text, code)) {
       return subject;
     }
   }
@@ -38,8 +51,7 @@ export async function resolveSubjectCode(text: string): Promise<string | null> {
     if (data) {
       for (const row of data) {
         inMemoryMappings.set(row.course_code.toUpperCase(), row.subject_name);
-        const codeRegex = new RegExp(`\\b${row.course_code}\\b`, "i");
-        if (codeRegex.test(text)) {
+        if (matchesCourseCode(text, row.course_code)) {
           return row.subject_name;
         }
       }

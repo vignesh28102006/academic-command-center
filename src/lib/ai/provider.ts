@@ -25,6 +25,8 @@ export interface AIParseContext {
   timezone: string; // e.g. "Asia/Kolkata"
   sourceGroup?: string;
   sourceSender?: string;
+  sourceMessageTimestamp?: string;
+  sourceMessageDate?: string;
   existingEvents?: ExistingEventSummary[];
 }
 
@@ -76,7 +78,10 @@ export class DeterministicFallbackProvider implements AIProvider {
       };
     }
 
-    const refDate = new Date(context.currentDateTime);
+    // Relative dates anchor on sourceMessageTimestamp when available, falling back to currentDateTime
+    const refDate = context.sourceMessageTimestamp
+      ? new Date(context.sourceMessageTimestamp)
+      : new Date(context.currentDateTime);
     const validRefDate = isNaN(refDate.getTime()) ? new Date() : refDate;
 
     const parsedList = parseMultipleAcademicMessages(trimmed, {

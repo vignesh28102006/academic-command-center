@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx src/lib/self-check.ts && tsx src/lib/ai/ai-parser.test.ts && tsx src/lib/ai/multi-events.test.ts && tsx src/lib/db/database-notion.test.ts && tsx src/lib/collector/collector.test.ts && tsx src/lib/collector/group-filter.test.ts && tsx src/lib/collector/manual-scan.test.ts && tsx src/lib/reminders/reminders.test.ts",
+    "test": "tsx src/lib/self-check.ts && tsx src/lib/ai/ai-parser.test.ts && tsx src/lib/ai/multi-events.test.ts && tsx src/lib/db/database-notion.test.ts && tsx src/lib/collector/collector.test.ts && tsx src/lib/collector/group-filter.test.ts && tsx src/lib/collector/manual-scan.test.ts && tsx src/lib/collector/cursor-rescan-regression.test.ts && tsx src/lib/reminders/reminders.test.ts",
     "test:group-filter": "tsx src/lib/collector/group-filter.test.ts",
     "test:multi": "tsx src/lib/ai/multi-events.test.ts",
     "cleanup:dry-run": "tsx scripts/cleanup-events.mjs --dry-run",

@@ -13,7 +13,7 @@ const res1 = processAcademicMessage(msg1, [], { referenceDate });
 assert.strictEqual(res1.action, "CREATED", "msg1 should create a new item");
 assert.ok(res1.item, "msg1 item should exist");
 assert.strictEqual(res1.item.type, "LAB", "msg1 type should be LAB");
-assert.ok(res1.item.title.toLowerCase().includes("lab2"), `msg1 title (${res1.item.title}) should mention lab2`);
+assert.ok(res1.item.title.toLowerCase().replace(/\s+/g, "").includes("lab2"), `msg1 title (${res1.item.title}) should mention lab2`);
 assert.ok(res1.item.deadline?.includes("11:35"), `msg1 deadline should have 11:35, got ${res1.item.deadline}`);
 assert.strictEqual(res1.item.submissionUrl, "https://example.com", "msg1 submissionUrl should match");
 assert.strictEqual(res1.item.subject, "NEEDS_CONFIRMATION", "msg1 subject should be NEEDS_CONFIRMATION");

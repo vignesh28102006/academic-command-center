@@ -81,6 +81,8 @@ function mapRowToAcademicItem(row: any, history: ChangeRecord[] = []): AcademicI
     requirements: Array.isArray(row.requirements) ? row.requirements : [],
     sourceGroup: row.source_group || undefined,
     sourceSender: row.source_sender || undefined,
+    sourceMessageTimestamp: row.source_message_timestamp || undefined,
+    sourceMessageDate: row.source_message_date ? String(row.source_message_date).slice(0, 10) : (row.source_message_timestamp ? String(row.source_message_timestamp).slice(0, 10) : undefined),
     originalMessages: Array.isArray(row.original_messages) ? row.original_messages : [],
     sourceKey: row.source_key || undefined,
     notionPageId: row.notion_page_id || undefined,
@@ -224,6 +226,8 @@ export async function createAcademicEvent(item: AcademicItem): Promise<AcademicI
       requirements: record.requirements || [],
       source_group: record.sourceGroup || null,
       source_sender: record.sourceSender || null,
+      source_message_timestamp: record.sourceMessageTimestamp || null,
+      source_message_date: record.sourceMessageDate || (record.sourceMessageTimestamp ? record.sourceMessageTimestamp.slice(0, 10) : null),
       original_messages: record.originalMessages || [],
       source_key: record.sourceKey || null,
       notion_page_id: record.notionPageId || null,
@@ -296,6 +300,10 @@ export async function updateAcademicEvent(
   if (updates.attachmentNames !== undefined) updatePayload.attachment_names = updates.attachmentNames;
   if (updates.description !== undefined) updatePayload.description = updates.description;
   if (updates.requirements !== undefined) updatePayload.requirements = updates.requirements;
+  if (updates.sourceGroup !== undefined) updatePayload.source_group = updates.sourceGroup;
+  if (updates.sourceSender !== undefined) updatePayload.source_sender = updates.sourceSender;
+  if (updates.sourceMessageTimestamp !== undefined) updatePayload.source_message_timestamp = updates.sourceMessageTimestamp;
+  if (updates.sourceMessageDate !== undefined) updatePayload.source_message_date = updates.sourceMessageDate;
   if (updates.originalMessages !== undefined) updatePayload.original_messages = updates.originalMessages;
   if (updates.notionPageId !== undefined) updatePayload.notion_page_id = updates.notionPageId;
   if (updates.needsConfirmation !== undefined) updatePayload.needs_confirmation = updates.needsConfirmation;

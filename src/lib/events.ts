@@ -21,6 +21,21 @@ function numbersDiffer(a: string, b: string): boolean {
   return false;
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function safeWordMatch(target: string, pattern: string): boolean {
+  if (!target || !pattern) return false;
+  if (target === pattern || target.includes(pattern) || pattern.includes(target)) return true;
+  try {
+    const escaped = escapeRegExp(pattern);
+    return new RegExp(`(?:^|\\b|\\W)${escaped}(?:$|\\b|\\W)`, "i").test(target);
+  } catch {
+    return false;
+  }
+}
+
 export function findMatchingItem(
   title: string | null | undefined,
   targetSnippet: string | null | undefined,
@@ -60,8 +75,8 @@ export function findMatchingItem(
       }
       return itemTitle === normSnippet ||
              itemTitle.includes(normSnippet) ||
-             new RegExp(`\\b${normSnippet.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(itemTitle) ||
-             new RegExp(`\\b${itemTitle.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(normSnippet);
+             safeWordMatch(itemTitle, normSnippet) ||
+             safeWordMatch(normSnippet, itemTitle);
     });
     if (matched) return matched;
   }
@@ -72,8 +87,9 @@ export function findMatchingItem(
       const itemTitle = item.title.toLowerCase();
       if (numbersDiffer(itemTitle, normTitle)) return false;
       return itemTitle === normTitle ||
-             new RegExp(`\\b${normTitle.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(itemTitle) ||
-             new RegExp(`\\b${itemTitle.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(normTitle);
+             itemTitle.includes(normTitle) ||
+             safeWordMatch(itemTitle, normTitle) ||
+             safeWordMatch(normTitle, itemTitle);
     });
     if (directMatch) return directMatch;
 
@@ -118,6 +134,8 @@ function processSingleExtraction(
   options?: {
     sourceGroup?: string;
     sourceSender?: string;
+    sourceMessageTimestamp?: string;
+    sourceMessageDate?: string;
     referenceDate?: Date;
     timezone?: string;
   },
@@ -343,6 +361,8 @@ function processSingleExtraction(
     description: extraction.description ?? trimmed,
     sourceGroup: options?.sourceGroup,
     sourceSender: options?.sourceSender,
+    sourceMessageTimestamp: options?.sourceMessageTimestamp,
+    sourceMessageDate: options?.sourceMessageDate || (options?.sourceMessageTimestamp ? options.sourceMessageTimestamp.slice(0, 10) : undefined),
     originalMessages: [trimmed],
     createdAt: nowIso,
     updatedAt: nowIso,
@@ -373,6 +393,8 @@ export async function processAcademicMessageWithAI(
   options?: {
     sourceGroup?: string;
     sourceSender?: string;
+    sourceMessageTimestamp?: string;
+    sourceMessageDate?: string;
     referenceDate?: Date;
     timezone?: string;
   },
@@ -407,6 +429,8 @@ export async function processAcademicMessageWithAI(
     timezone,
     sourceGroup: options?.sourceGroup,
     sourceSender: options?.sourceSender,
+    sourceMessageTimestamp: options?.sourceMessageTimestamp,
+    sourceMessageDate: options?.sourceMessageDate,
     existingEvents: existingItems.map(item => ({
       id: item.id,
       title: item.title,
@@ -519,6 +543,8 @@ export function processAcademicMessage(
   options?: {
     sourceGroup?: string;
     sourceSender?: string;
+    sourceMessageTimestamp?: string;
+    sourceMessageDate?: string;
     referenceDate?: Date;
   }
 ): ParseResult {
@@ -720,6 +746,8 @@ export function processAcademicMessage(
     description: parsed.description,
     sourceGroup: parsed.sourceGroup,
     sourceSender: parsed.sourceSender,
+    sourceMessageTimestamp: options?.sourceMessageTimestamp,
+    sourceMessageDate: options?.sourceMessageDate || (options?.sourceMessageTimestamp ? options.sourceMessageTimestamp.slice(0, 10) : undefined),
     originalMessages: parsed.originalMessages,
     createdAt: now,
     updatedAt: now,

@@ -370,8 +370,93 @@ async function runGroupFilterTests() {
   assert.ok(cleanupRes.deletedCount >= 1, "Cleanup must delete invalid spam events");
   console.log("✓ Bonus test passed: Database cleanup preview and execution works safely");
 
+  // ---------------------------------------------------------------------------
+  // Requirement 9 & 10: Announcement Group & Personal Chat Detection Suite
+  // ---------------------------------------------------------------------------
+  console.log("\n--- Requirement 9 & 10: Announcement Group & Personal Chat Detection ---");
+  
+  // Test 10A: CSE-C Announcements with header group indicators and bottom "Only admins can send messages"
+  const test10A = detectIsGroupChat({
+    chatName: "CSE-C Announcements",
+    headerActionLabel: "Group info",
+    headerIcons: ["announcement", "community"],
+    composerText: "Only admins can send messages"
+  });
+  assert.strictEqual(test10A, true, "10A: CSE-C Announcements with header & composer notice must detect as GROUP");
+  console.log("✓ Test 10A passed: CSE-C Announcements with announcement UI detected as GROUP");
+
+  // Test 10B: CSE-C Announcements with missing participant subtitle
+  const test10B = detectIsGroupChat({
+    chatName: "CSE-C Announcements",
+    subtitleText: undefined,
+    composerText: "Only admins can send messages"
+  });
+  assert.strictEqual(test10B, true, "10B: CSE-C Announcements with missing subtitle must detect as GROUP");
+  console.log("✓ Test 10B passed: CSE-C Announcements without participant subtitle detected as GROUP");
+
+  // Test 10C: CSE-C Announcements with no author header
+  const test10C = detectIsGroupChat({
+    chatName: "CSE-C Announcements",
+    hasAuthorHeadersOnMessages: false,
+    composerText: "Only admins can send messages"
+  });
+  assert.strictEqual(test10C, true, "10C: CSE-C Announcements without author headers must detect as GROUP");
+  console.log("✓ Test 10C passed: CSE-C Announcements without author headers detected as GROUP");
+
+  // Test 10D: Normal allowed group Machine Learning CSE-C
+  const test10D = detectIsGroupChat({
+    chatName: "Machine Learning CSE-C"
+  });
+  assert.strictEqual(test10D, true, "10D: Machine Learning CSE-C must detect as GROUP");
+  console.log("✓ Test 10D passed: Machine Learning CSE-C detected as GROUP");
+
+  // Test 10E: Normal personal chat: Vignesh
+  const test10E = detectIsGroupChat({
+    chatName: "Vignesh"
+  });
+  assert.strictEqual(test10E, false, "10E: Vignesh must detect as PERSONAL");
+  console.log("✓ Test 10E passed: Normal personal chat 'Vignesh' detected as PERSONAL");
+
+  // Requirement 9: Personal chat regression tests
+  assert.strictEqual(
+    detectIsGroupChat({
+      chatName: "Alex",
+      subtitleText: "online"
+    }),
+    false,
+    "Personal chat with 'online' subtitle must detect as PERSONAL"
+  );
+
+  assert.strictEqual(
+    detectIsGroupChat({
+      chatName: "Dr. Smith",
+      headerActionLabel: "Contact info"
+    }),
+    false,
+    "Personal chat with 'Contact info' header must detect as PERSONAL"
+  );
+
+  assert.strictEqual(
+    detectIsGroupChat({
+      chatName: "Rahul",
+      subtitleText: "last seen today at 11:45 PM"
+    }),
+    false,
+    "Personal chat with 'last seen...' subtitle must detect as PERSONAL"
+  );
+
+  assert.strictEqual(
+    detectIsGroupChat({
+      chatName: "Sneha",
+      headerIcons: ["default-user"]
+    }),
+    false,
+    "Personal chat with 'default-user' avatar icon must detect as PERSONAL"
+  );
+  console.log("✓ Requirement 9 passed: Genuine 1-to-1 personal chats strictly preserved as PERSONAL");
+
   console.log("\n============================================================");
-  console.log("ALL 20 GROUP FILTER & RELEVANCE TESTS PASSED CLEANLY! 🎉");
+  console.log("ALL GROUP FILTER & RELEVANCE TESTS PASSED CLEANLY! 🎉");
   console.log("============================================================\n");
 }
 
