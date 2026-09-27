@@ -1,5 +1,5 @@
 import { AcademicItem, AcademicType } from "./types";
-import { extractDateString, extractTimeString, toLocalDateString } from "./dateUtils";
+import { extractDateString, extractMultipleDates, extractTimeString, toLocalDateString } from "./dateUtils";
 
 const URL_REGEX = /https?:\/\/[^\s)\]]+/gi;
 
@@ -270,17 +270,19 @@ export function parseAcademicMessage(
   let eventDate: string | undefined;
   let eventTime = timeInfo;
 
-  if (type === "EXAM" || type === "SLIP_TEST" || type === "QUIZ" || type === "PRESENTATION") {
-    eventDate = dateInfo?.dateStr;
-  } else if (dateInfo?.dateStr) {
-    // If it's a lab/assignment with a time, assemble deadline string
-    if (timeInfo && dateInfo.isRelative) {
-      // Build ISO string preserving local date
-      const datePart = dateInfo.dateStr;
-      deadline = `${datePart}T${formatTimeForIso(timeInfo)}`;
+  if (dateInfo?.dateStr) {
+    eventDate = dateInfo.dateStr;
+    if (type === "EXAM" || type === "SLIP_TEST" || type === "QUIZ" || type === "PRESENTATION") {
+      // eventDate is primary
     } else {
-      deadline = `${dateInfo.dateStr}T23:59:59`;
-      eventDate = dateInfo.dateStr;
+      // If it's a lab/assignment with a time, assemble deadline string
+      if (timeInfo && dateInfo.isRelative) {
+        // Build ISO string preserving local date
+        const datePart = dateInfo.dateStr;
+        deadline = `${datePart}T${formatTimeForIso(timeInfo)}`;
+      } else {
+        deadline = `${dateInfo.dateStr}T23:59:59`;
+      }
     }
   }
 
@@ -332,4 +334,102 @@ function formatTimeForIso(timeStr: string): string {
   const hh = hours < 10 ? `0${hours}` : `${hours}`;
   const mm = minutes < 10 ? `0${minutes}` : `${minutes}`;
   return `${hh}:${mm}:00`;
+}
+
+/**
+ * Parse a message that potentially contains multiple academic events or multiple dates.
+ * Always returns an array of ParsedAcademicMessage. Single-event messages simply return an array of 1 item.
+ */
+export function parseMultipleAcademicMessages(
+  text: string,
+  options?: {
+    sourceGroup?: string;
+    sourceSender?: string;
+    referenceDate?: Date;
+  }
+): ParsedAcademicMessage[] {
+  const refDate = options?.referenceDate ?? new Date();
+  const trimmed = text.trim();
+
+  // 1. If this is a modification / postponement / cancellation, it modifies one existing event
+  const modIntent = detectModificationIntent(trimmed, refDate);
+  if (modIntent.isModification) {
+    return [parseAcademicMessage(trimmed, options)];
+  }
+
+  // 2. Check compound independent clauses joined by "and", ";", or newlines
+  // e.g. "OS exam next Tuesday and DBMS exam next Thursday"
+  // e.g. "Quiz 2 will be on Monday and Assignment 3 is due Wednesday"
+  const clauseSplits = trimmed.split(/\s+(?:and|&)\s+|;\s*|\n+/i);
+  if (clauseSplits.length >= 2) {
+    const hasAcademicKeywords = clauseSplits.map(clause =>
+      /\b(exam|test|quiz|assignment|lab|project|presentation|course|deadline|due|submit)\b/i.test(clause)
+    );
+    const hasDistinctTasks = hasAcademicKeywords.filter(Boolean).length >= 2;
+
+    if (hasDistinctTasks) {
+      const parsedClauses: ParsedAcademicMessage[] = [];
+      for (const clause of clauseSplits) {
+        if (clause.trim().length > 3) {
+          const parsed = parseAcademicMessage(clause.trim(), { ...options, referenceDate: refDate });
+          parsedClauses.push(parsed);
+        }
+      }
+      if (parsedClauses.length >= 2) {
+        return parsedClauses;
+      }
+    }
+  }
+
+  // 3. Check for multiple dates in a message with a shared event/title
+  // e.g. "Exams are next Tuesday and next Thursday."
+  // e.g. "Lab exams are on Tuesday at 10 AM and Thursday at 2 PM."
+  // e.g. "Internal exams next Tuesday, Thursday and Saturday."
+  const multiDates = extractMultipleDates(trimmed, refDate);
+  if (multiDates.length >= 2) {
+    const baseParsed = parseAcademicMessage(trimmed, options);
+    const results: ParsedAcademicMessage[] = [];
+
+    // Clean base title (e.g. remove "are next Tuesday..." if present)
+    let cleanBaseTitle = baseParsed.title;
+    if (/\b(exams?|internal exams?|lab exams?|mid\s*term\s*exams?|slip\s*tests?)\b/i.test(trimmed)) {
+      const examMatch = trimmed.match(/\b(internal\s*exams?|lab\s*exams?|mid\s*term\s*exams?|slip\s*tests?|exams?)\b/i);
+      if (examMatch) {
+        cleanBaseTitle = examMatch[0].replace(/\b\w/g, c => c.toUpperCase());
+        if (cleanBaseTitle.endsWith("s") && !cleanBaseTitle.endsWith("ss")) {
+          cleanBaseTitle = cleanBaseTitle.slice(0, -1);
+        }
+      }
+    }
+
+    for (const occ of multiDates) {
+      const occurrenceTitle = `${cleanBaseTitle} — ${occ.dayName || occ.dateStr}`;
+      const occurrenceTime = occ.timeStr ?? baseParsed.eventTime;
+
+      let occurrenceDeadline: string | undefined;
+      let occurrenceEventDate: string | undefined = occ.dateStr;
+
+      if (baseParsed.type === "EXAM" || baseParsed.type === "SLIP_TEST" || baseParsed.type === "QUIZ" || baseParsed.type === "PRESENTATION") {
+        occurrenceEventDate = occ.dateStr;
+      } else {
+        occurrenceDeadline = occurrenceTime
+          ? `${occ.dateStr}T${formatTimeForIso(occurrenceTime)}`
+          : `${occ.dateStr}T23:59:59`;
+      }
+
+      results.push({
+        ...baseParsed,
+        title: occurrenceTitle,
+        eventDate: occurrenceEventDate,
+        eventTime: occurrenceTime,
+        deadline: occurrenceDeadline,
+        description: trimmed
+      });
+    }
+
+    return results;
+  }
+
+  // 4. Fallback to single-event message
+  return [parseAcademicMessage(trimmed, options)];
 }

@@ -25,16 +25,39 @@ export function findMatchingItem(
   title: string | null | undefined,
   targetSnippet: string | null | undefined,
   subject: string | null | undefined,
-  existingItems: AcademicItem[]
+  existingItems: AcademicItem[],
+  targetDate?: string | null | undefined
 ): AcademicItem | undefined {
   const normTitle = (title ?? "").toLowerCase().trim();
   const normSnippet = (targetSnippet ?? "").toLowerCase().trim();
 
-  // 1. Direct match on snippet (e.g. "slip test 2", "lab 2", "assignment 1")
+  // 0. Match by target date if provided
+  if (targetDate) {
+    const dateMatch = existingItems.find(item => item.eventDate === targetDate);
+    if (dateMatch) return dateMatch;
+  }
+
+  // 1. Direct match on snippet (e.g. "slip test 2", "lab 2", "assignment 1", "scheduled next Tuesday")
   if (normSnippet) {
+    // If snippet mentions a day of the week, filter for items on that day
+    const dayMatches = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+      .filter(d => normSnippet.includes(d));
+
     const matched = existingItems.find(item => {
       const itemTitle = item.title.toLowerCase();
       if (numbersDiffer(itemTitle, normSnippet)) return false;
+
+      if (dayMatches.length > 0) {
+        const itemDayMatches = dayMatches.some(d => {
+          if (itemTitle.includes(d)) return true;
+          if (item.eventDate) {
+            const itemDow = new Date(item.eventDate).toLocaleDateString("en-US", { weekday: "long" }).toLowerCase();
+            return itemDow === d;
+          }
+          return false;
+        });
+        if (!itemDayMatches) return false;
+      }
       return itemTitle === normSnippet ||
              itemTitle.includes(normSnippet) ||
              new RegExp(`\\b${normSnippet.replace(/[.*+?^${}()|[\\]\\]/g, "\\$&")}\\b`, "i").test(itemTitle) ||
@@ -73,6 +96,9 @@ export function findMatchingItem(
 
 export interface AIParsingResult extends ParseResult {
   aiExtraction?: AIExtractionOutput;
+  aiExtractions?: AIExtractionOutput[];
+  items?: AcademicItem[];
+  results?: AIParsingResult[];
   providerUsed?: string;
   fallbackOccurred?: boolean;
   beforeAfter?: {
@@ -82,66 +108,23 @@ export interface AIParsingResult extends ParseResult {
 }
 
 /**
- * Phase 2 AI-Powered Academic Event Processor.
- * Combines AI structured extraction with the Event Intelligence Engine.
+ * Process a single extraction candidate through the Event Intelligence Engine
  */
-export async function processAcademicMessageWithAI(
-  text: string,
+function processSingleExtraction(
+  extraction: AIExtractionOutput,
   existingItems: AcademicItem[],
+  trimmed: string,
+  nowIso: string,
   options?: {
     sourceGroup?: string;
     sourceSender?: string;
     referenceDate?: Date;
     timezone?: string;
   },
-  customAIProvider?: AIProvider
-): Promise<AIParsingResult> {
-  const refDate = options?.referenceDate ?? new Date();
-  const timezone = options?.timezone ?? "Asia/Kolkata";
-  const nowIso = refDate.toISOString();
-  const currentDate = refDate.toISOString().slice(0, 10);
-  const trimmed = text.trim();
-
-  // 1. Check for duplicate raw message before calling AI
-  const duplicateItem = existingItems.find(item =>
-    item && Array.isArray(item.originalMessages) &&
-    item.originalMessages.some(m => typeof m === "string" && m.trim().toLowerCase() === trimmed.toLowerCase())
-  );
-  if (duplicateItem) {
-    return {
-      action: "IGNORED_DUPLICATE",
-      item: duplicateItem,
-      updatedItemId: duplicateItem.id,
-      reason: `Duplicate message already recorded for "${duplicateItem.title}".`,
-      confidence: "HIGH"
-    };
-  }
-
-  // 2. Build Context for AI model
-  const context: AIParseContext = {
-    currentDate,
-    currentDateTime: nowIso,
-    timezone,
-    sourceGroup: options?.sourceGroup,
-    sourceSender: options?.sourceSender,
-    existingEvents: existingItems.map(item => ({
-      id: item.id,
-      title: item.title,
-      subject: item.subject,
-      type: item.type,
-      eventDate: item.eventDate,
-      eventTime: item.eventTime,
-      deadline: item.deadline,
-      submissionUrl: item.submissionUrl,
-      status: item.status
-    }))
-  };
-
-  // 3. Extract with AI Provider (or fallback)
-  const { extraction, providerUsed, fallbackOccurred } =
-    await parseAcademicMessageWithAI(trimmed, context, customAIProvider);
-
-  // 4. Handle NON_ACADEMIC
+  providerUsed?: string,
+  fallbackOccurred?: boolean
+): AIParsingResult {
+  // 1. Handle NON_ACADEMIC
   if (extraction.action === "NON_ACADEMIC") {
     return {
       action: "NON_ACADEMIC",
@@ -152,7 +135,7 @@ export async function processAcademicMessageWithAI(
     };
   }
 
-  // 5. Handle IGNORED_DUPLICATE from AI
+  // 2. Handle IGNORED_DUPLICATE from AI
   if (extraction.action === "IGNORED_DUPLICATE") {
     return {
       action: "IGNORED_DUPLICATE",
@@ -163,15 +146,16 @@ export async function processAcademicMessageWithAI(
     };
   }
 
-  // 6. Match against existing events
+  // 3. Match against existing events
   const matchedItem = findMatchingItem(
     extraction.title,
     extraction.targetEventTitle,
     extraction.subject,
-    existingItems
+    existingItems,
+    extraction.eventDate
   );
 
-  // 7. If matched item exists and action indicates an update or modification:
+  // 4. If matched item exists and action indicates an update or modification:
   const isExplicitModification =
     extraction.action === "POSTPONED" ||
     extraction.action === "UPDATED" ||
@@ -335,7 +319,7 @@ export async function processAcademicMessageWithAI(
     };
   }
 
-  // 8. Otherwise: Create a brand new item
+  // 5. Otherwise: Create a brand new item
   const confidenceLevel = evaluateConfidence(
     extraction.confidence,
     extraction.needsConfirmation
@@ -351,7 +335,7 @@ export async function processAcademicMessageWithAI(
     type: extraction.type,
     status: extraction.needsConfirmation ? "INBOX" : "INBOX",
     deadline: extraction.deadline ?? (extraction.deadlineTime && extraction.eventDate ? `${extraction.eventDate}T${extraction.deadlineTime}` : undefined),
-    eventDate: extraction.eventDate ?? undefined,
+    eventDate: extraction.eventDate ?? (extraction.deadline && /^\d{4}-\d{2}-\d{2}/.test(extraction.deadline) ? extraction.deadline.slice(0, 10) : undefined),
     eventTime: extraction.eventTime ?? extraction.deadlineTime ?? undefined,
     submissionUrl: extraction.submissionUrl ?? undefined,
     resourceUrls: extraction.resourceUrls,
@@ -375,6 +359,154 @@ export async function processAcademicMessageWithAI(
     fallbackOccurred,
     confidence: confidenceLevel,
     reason: extraction.confirmationReason ?? undefined
+  };
+}
+
+/**
+ * Phase 2 & 4B AI-Powered Academic Event Processor.
+ * Combines AI structured extraction with the Event Intelligence Engine.
+ * Supports messages containing single or multiple academic events / multiple dates.
+ */
+export async function processAcademicMessageWithAI(
+  text: string,
+  existingItems: AcademicItem[],
+  options?: {
+    sourceGroup?: string;
+    sourceSender?: string;
+    referenceDate?: Date;
+    timezone?: string;
+  },
+  customAIProvider?: AIProvider
+): Promise<AIParsingResult> {
+  const refDate = options?.referenceDate ?? new Date();
+  const timezone = options?.timezone ?? "Asia/Kolkata";
+  const nowIso = refDate.toISOString();
+  const currentDate = refDate.toISOString().slice(0, 10);
+  const trimmed = text.trim();
+
+  // 1. Check for duplicate raw message before calling AI
+  const duplicateItem = existingItems.find(item =>
+    item && Array.isArray(item.originalMessages) &&
+    item.originalMessages.some(m => typeof m === "string" && m.trim().toLowerCase() === trimmed.toLowerCase())
+  );
+  if (duplicateItem) {
+    return {
+      action: "IGNORED_DUPLICATE",
+      item: duplicateItem,
+      items: [duplicateItem],
+      updatedItemId: duplicateItem.id,
+      reason: `Duplicate message already recorded for "${duplicateItem.title}".`,
+      confidence: "HIGH"
+    };
+  }
+
+  // 2. Build Context for AI model
+  const context: AIParseContext = {
+    currentDate,
+    currentDateTime: nowIso,
+    timezone,
+    sourceGroup: options?.sourceGroup,
+    sourceSender: options?.sourceSender,
+    existingEvents: existingItems.map(item => ({
+      id: item.id,
+      title: item.title,
+      subject: item.subject,
+      type: item.type,
+      eventDate: item.eventDate,
+      eventTime: item.eventTime,
+      deadline: item.deadline,
+      submissionUrl: item.submissionUrl,
+      status: item.status
+    }))
+  };
+
+  // 3. Extract with AI Provider (or fallback)
+  const { extraction, extractions, providerUsed, fallbackOccurred } =
+    await parseAcademicMessageWithAI(trimmed, context, customAIProvider);
+
+  const eventList = (extractions && extractions.length > 0) ? extractions : [extraction];
+
+  // 4. Process each extracted candidate independently through Event Intelligence Engine
+  const results: AIParsingResult[] = [];
+  const currentItems = [...existingItems];
+
+  for (const ext of eventList) {
+    const subResult = processSingleExtraction(
+      ext,
+      currentItems,
+      trimmed,
+      nowIso,
+      options,
+      providerUsed,
+      fallbackOccurred
+    );
+    results.push(subResult);
+
+    // Keep tracking in current batch to maintain consistency
+    if (subResult.item) {
+      currentItems.push(subResult.item);
+    }
+  }
+
+  // Filter items
+  const items = results.map(r => r.item).filter((item): item is AcademicItem => Boolean(item));
+
+  // Determine overall action
+  const primaryAction = results.every(r => r.action === "IGNORED_DUPLICATE")
+    ? "IGNORED_DUPLICATE"
+    : results.every(r => r.action === "NON_ACADEMIC")
+      ? "NON_ACADEMIC"
+      : results.every(r => r.action === "UPDATED")
+        ? "UPDATED"
+        : "CREATED";
+
+  const firstResult = results[0] || {
+    action: "NON_ACADEMIC",
+    reason: "No events extracted."
+  };
+
+  return {
+    action: primaryAction,
+    item: items[0],
+    items,
+    results,
+    updatedItemId: firstResult.updatedItemId,
+    changeSummary: results.map(r => r.changeSummary).filter(Boolean).join("; ") || undefined,
+    aiExtraction: eventList[0],
+    aiExtractions: eventList,
+    providerUsed,
+    fallbackOccurred,
+    confidence: firstResult.confidence,
+    reason: firstResult.reason,
+    beforeAfter: firstResult.beforeAfter
+  };
+}
+
+/**
+ * Convenience helper explicitly returning an array of items for multiple academic events
+ */
+export async function processMultipleAcademicEventsWithAI(
+  text: string,
+  existingItems: AcademicItem[],
+  options?: {
+    sourceGroup?: string;
+    sourceSender?: string;
+    referenceDate?: Date;
+    timezone?: string;
+  },
+  customAIProvider?: AIProvider
+): Promise<{
+  action: "CREATED" | "UPDATED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC";
+  items: AcademicItem[];
+  results: AIParsingResult[];
+  rawResult: AIParsingResult;
+}> {
+  const rawResult = await processAcademicMessageWithAI(text, existingItems, options, customAIProvider);
+  return {
+    action: rawResult.action as any,
+    items: rawResult.items ?? (rawResult.item ? [rawResult.item] : []),
+    results: rawResult.results ?? [rawResult],
+    rawResult
   };
 }
 

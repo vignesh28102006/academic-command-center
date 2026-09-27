@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS academic_events (
     notion_page_id TEXT,
     needs_confirmation BOOLEAN DEFAULT FALSE,
     confidence FLOAT DEFAULT 0.8,
+    event_version INTEGER NOT NULL DEFAULT 1,
     last_synced_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -42,6 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_academic_events_subject ON academic_events(subjec
 CREATE INDEX IF NOT EXISTS idx_academic_events_event_date ON academic_events(event_date);
 CREATE INDEX IF NOT EXISTS idx_academic_events_deadline ON academic_events(deadline);
 CREATE INDEX IF NOT EXISTS idx_academic_events_notion_page ON academic_events(notion_page_id);
+CREATE INDEX IF NOT EXISTS idx_academic_events_event_version ON academic_events(event_version);
 
 -- 2. Change History Table (Immutable Audit Log for modifications/postponements)
 CREATE TABLE IF NOT EXISTS change_history (
@@ -144,3 +146,46 @@ CREATE TABLE IF NOT EXISTS collector_scan_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_collector_scan_history_started ON collector_scan_history(started_at DESC);
+
+-- 7. Reminders Table (Phase 4B Automated Reminders & Scheduled Alerts)
+CREATE TABLE IF NOT EXISTS reminders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    event_id UUID NOT NULL REFERENCES academic_events(id) ON DELETE CASCADE,
+    reminder_type TEXT NOT NULL,
+    scheduled_for TIMESTAMPTZ NOT NULL,
+    sent_at TIMESTAMPTZ,
+    status TEXT NOT NULL DEFAULT 'SCHEDULED',
+    notification_channel TEXT NOT NULL DEFAULT 'CONSOLE',
+    message TEXT NOT NULL,
+    event_version INTEGER NOT NULL DEFAULT 1,
+    priority TEXT DEFAULT 'NORMAL',
+    submission_url TEXT,
+    dedup_key TEXT UNIQUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_reminders_event_id ON reminders(event_id);
+CREATE INDEX IF NOT EXISTS idx_reminders_status ON reminders(status);
+CREATE INDEX IF NOT EXISTS idx_reminders_scheduled_status ON reminders(scheduled_for, status);
+CREATE INDEX IF NOT EXISTS idx_reminders_dedup ON reminders(dedup_key);
+
+-- 8. Reminder Settings Table (Phase 4B Configuration)
+CREATE TABLE IF NOT EXISTS reminder_settings (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    morning_briefing_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    morning_briefing_time TEXT NOT NULL DEFAULT '07:30',
+    timezone TEXT NOT NULL DEFAULT 'Asia/Kolkata',
+    deadline_reminders_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    exam_reminders_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    default_reminder_intervals JSONB NOT NULL DEFAULT '["7d", "3d", "1d", "3h", "1h"]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Seed default reminder settings
+INSERT INTO reminder_settings (id, enabled, morning_briefing_enabled, morning_briefing_time, timezone, deadline_reminders_enabled, exam_reminders_enabled, default_reminder_intervals)
+VALUES ('default', TRUE, TRUE, '07:30', 'Asia/Kolkata', TRUE, TRUE, '["7d", "3d", "1d", "3h", "1h"]'::jsonb)
+ON CONFLICT (id) DO NOTHING;
+

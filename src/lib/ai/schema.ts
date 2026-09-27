@@ -89,6 +89,15 @@ export const AIExtractionOutputSchema = z.object({
 export type AIExtractionOutput = z.infer<typeof AIExtractionOutputSchema>;
 
 /**
+ * Envelope schema for multiple academic events extracted from a single message.
+ */
+export const AIMultiEventExtractionSchema = z.object({
+  events: z.array(AIExtractionOutputSchema).default([])
+});
+
+export type AIMultiEventExtractionOutput = z.infer<typeof AIMultiEventExtractionSchema>;
+
+/**
  * Configurable confidence thresholds
  */
 export const CONFIDENCE_THRESHOLDS = {
@@ -110,13 +119,18 @@ export function evaluateConfidence(
 }
 
 /**
- * Validate and sanitize raw JSON output from the AI model
+ * Validate and sanitize a single raw JSON event output
  */
 export function validateAndSanitizeAIExtraction(raw: unknown): {
   success: boolean;
   data: AIExtractionOutput;
   errors?: string[];
 } {
+  // If payload is wrapped in { events: [...] }, unwrap first item
+  if (raw && typeof raw === "object" && "events" in raw && Array.isArray((raw as any).events) && (raw as any).events.length > 0) {
+    return validateAndSanitizeAIExtraction((raw as any).events[0]);
+  }
+
   const result = AIExtractionOutputSchema.safeParse(raw);
   if (result.success) {
     return {
@@ -155,5 +169,73 @@ export function validateAndSanitizeAIExtraction(raw: unknown): {
       confirmationReason: `Schema validation failed: ${errorMessages.slice(0, 2).join("; ")}`
     },
     errors: errorMessages
+  };
+}
+
+/**
+ * Validate and sanitize multiple event extraction payload.
+ * Supports both { events: [...] } envelope and single event objects.
+ */
+export function validateAndSanitizeAIMultiExtraction(raw: unknown): {
+  success: boolean;
+  data: AIMultiEventExtractionOutput;
+  errors?: string[];
+} {
+  if (!raw || typeof raw !== "object") {
+    const single = validateAndSanitizeAIExtraction(raw);
+    return {
+      success: single.success,
+      data: { events: [single.data] },
+      errors: single.errors
+    };
+  }
+
+  // Case 1: Array passed directly
+  if (Array.isArray(raw)) {
+    const parsedList = raw.map(item => validateAndSanitizeAIExtraction(item).data);
+    return {
+      success: true,
+      data: { events: parsedList.length > 0 ? parsedList : [validateAndSanitizeAIExtraction(null).data] }
+    };
+  }
+
+  // Case 2: Object with events array
+  if ("events" in raw && Array.isArray((raw as any).events)) {
+    const rawEvents = (raw as any).events;
+    if (rawEvents.length === 0) {
+      const single = validateAndSanitizeAIExtraction(raw);
+      return {
+        success: single.success,
+        data: { events: [single.data] },
+        errors: single.errors
+      };
+    }
+
+    let allSuccess = true;
+    const errors: string[] = [];
+    const events: AIExtractionOutput[] = [];
+
+    for (const item of rawEvents) {
+      const parsed = validateAndSanitizeAIExtraction(item);
+      if (!parsed.success) {
+        allSuccess = false;
+        if (parsed.errors) errors.push(...parsed.errors);
+      }
+      events.push(parsed.data);
+    }
+
+    return {
+      success: allSuccess,
+      data: { events },
+      errors: errors.length > 0 ? errors : undefined
+    };
+  }
+
+  // Case 3: Single event object without events key
+  const single = validateAndSanitizeAIExtraction(raw);
+  return {
+    success: single.success,
+    data: { events: [single.data] },
+    errors: single.errors
   };
 }

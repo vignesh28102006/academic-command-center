@@ -55,11 +55,14 @@ export interface AcademicItem {
   needsConfirmation?: boolean;
   confidence?: "HIGH" | "MEDIUM" | "NEEDS_CONFIRMATION";
   confidenceScore?: number;
+  eventVersion?: number;
   lastSyncedAt?: string;
   createdAt: string;
   updatedAt: string;
   changeHistory: ChangeRecord[];
 }
+
+export * from "./reminders/reminderTypes";
 
 export interface RawMessageRecord {
   id: string;

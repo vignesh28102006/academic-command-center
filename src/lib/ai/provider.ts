@@ -1,5 +1,10 @@
-import { AIExtractionOutput, validateAndSanitizeAIExtraction } from "./schema";
-import { parseAcademicMessage, isNonAcademicMessage } from "../parser";
+import {
+  AIExtractionOutput,
+  AIMultiEventExtractionOutput,
+  validateAndSanitizeAIExtraction,
+  validateAndSanitizeAIMultiExtraction
+} from "./schema";
+import { parseAcademicMessage, parseMultipleAcademicMessages, isNonAcademicMessage } from "../parser";
 import { formatCalendarDate } from "../dateUtils";
 
 export interface ExistingEventSummary {
@@ -26,11 +31,12 @@ export interface AIParseContext {
 export interface AIProvider {
   name: string;
   isAvailable(): boolean;
-  extract(message: string, context: AIParseContext): Promise<AIExtractionOutput>;
+  extract(message: string, context: AIParseContext): Promise<AIMultiEventExtractionOutput | AIExtractionOutput>;
 }
 
 /**
- * Fallback parser using Phase 1 deterministic engine if AI provider is not configured or errors out
+ * Fallback parser using Phase 1 deterministic engine if AI provider is not configured or errors out.
+ * Supports multiple events / multiple dates per message.
  */
 export class DeterministicFallbackProvider implements AIProvider {
   name = "deterministic-fallback";
@@ -39,93 +45,103 @@ export class DeterministicFallbackProvider implements AIProvider {
     return true;
   }
 
-  async extract(message: string, context: AIParseContext): Promise<AIExtractionOutput> {
+  async extract(message: string, context: AIParseContext): Promise<AIMultiEventExtractionOutput> {
     const trimmed = message.trim();
 
     // Check non-academic
     if (isNonAcademicMessage(trimmed)) {
       return {
-        action: "NON_ACADEMIC",
-        type: "OTHER",
-        title: null,
-        subject: null,
-        eventDate: null,
-        eventTime: null,
-        deadline: null,
-        deadlineTime: null,
-        submissionUrl: null,
-        resourceUrls: [],
-        attachmentNames: [],
-        description: trimmed,
-        requirements: [],
-        changeDescription: null,
-        targetEventTitle: null,
-        confidence: 0.95,
-        needsConfirmation: false,
-        confirmationReason: null
+        events: [
+          {
+            action: "NON_ACADEMIC",
+            type: "OTHER",
+            title: null,
+            subject: null,
+            eventDate: null,
+            eventTime: null,
+            deadline: null,
+            deadlineTime: null,
+            submissionUrl: null,
+            resourceUrls: [],
+            attachmentNames: [],
+            description: trimmed,
+            requirements: [],
+            changeDescription: null,
+            targetEventTitle: null,
+            confidence: 0.95,
+            needsConfirmation: false,
+            confirmationReason: null
+          }
+        ]
       };
     }
 
     const refDate = new Date(context.currentDateTime);
-    const parsed = parseAcademicMessage(trimmed, {
+    const validRefDate = isNaN(refDate.getTime()) ? new Date() : refDate;
+
+    const parsedList = parseMultipleAcademicMessages(trimmed, {
       sourceGroup: context.sourceGroup,
       sourceSender: context.sourceSender,
-      referenceDate: isNaN(refDate.getTime()) ? new Date() : refDate
+      referenceDate: validRefDate
     });
 
-    let action: AIExtractionOutput["action"] = "CREATED";
-    let changeDesc: string | null = null;
-    let targetTitle: string | null = null;
+    const events: AIExtractionOutput[] = parsedList.map(parsed => {
+      let action: AIExtractionOutput["action"] = "CREATED";
+      let changeDesc: string | null = null;
+      let targetTitle: string | null = null;
 
-    if (parsed.modificationIntent.isModification) {
-      if (parsed.modificationIntent.type === "POSTPONEMENT") {
-        action = "POSTPONED";
-      } else if (parsed.modificationIntent.type === "CANCELLATION") {
-        action = "CANCELLED";
-      } else {
-        action = "UPDATED";
+      if (parsed.modificationIntent.isModification) {
+        if (parsed.modificationIntent.type === "POSTPONEMENT") {
+          action = "POSTPONED";
+        } else if (parsed.modificationIntent.type === "CANCELLATION") {
+          action = "CANCELLED";
+        } else {
+          action = "UPDATED";
+        }
+        changeDesc = parsed.modificationIntent.summary ?? null;
+        targetTitle = parsed.modificationIntent.targetTitleSnippet ?? null;
       }
-      changeDesc = parsed.modificationIntent.summary ?? null;
-      targetTitle = parsed.modificationIntent.targetTitleSnippet ?? null;
-    }
 
-    // Check ambiguous message like "Submit this soon.", "Please submit project soon."
-    const isAmbiguous = /\b(submit\s+[^.!?]*\bsoon|do\s+it\s+quickly)\b/i.test(trimmed) && !parsed.deadline && !parsed.eventDate;
-    const needsConfirmation = isAmbiguous || parsed.subject === "NEEDS_CONFIRMATION" || parsed.confidence === "NEEDS_CONFIRMATION";
-    const confirmationReason = isAmbiguous
-      ? "Deadline is not specified."
-      : parsed.subject === "NEEDS_CONFIRMATION"
-        ? "Subject could not be determined with confidence."
-        : null;
+      // Check ambiguous message like "Submit this soon.", "Please submit project soon."
+      const isAmbiguous = /\b(submit\s+[^.!?]*\bsoon|do\s+it\s+quickly)\b/i.test(trimmed) && !parsed.deadline && !parsed.eventDate;
+      const needsConfirmation = isAmbiguous || parsed.subject === "NEEDS_CONFIRMATION" || parsed.confidence === "NEEDS_CONFIRMATION";
+      const confirmationReason = isAmbiguous
+        ? "Deadline is not specified."
+        : parsed.subject === "NEEDS_CONFIRMATION"
+          ? "Subject could not be determined with confidence."
+          : null;
 
-    const confidence = isAmbiguous
-      ? 0.55
-      : parsed.confidence === "HIGH"
-        ? 0.92
-        : parsed.confidence === "MEDIUM"
-          ? 0.78
-          : 0.65;
+      const confidence = isAmbiguous
+        ? 0.55
+        : parsed.confidence === "HIGH"
+          ? 0.92
+          : parsed.confidence === "MEDIUM"
+            ? 0.78
+            : 0.65;
 
-    return {
-      action,
-      type: parsed.type,
-      title: parsed.title,
-      subject: parsed.subject === "NEEDS_CONFIRMATION" ? null : parsed.subject,
-      eventDate: parsed.modificationIntent.newDate ?? parsed.eventDate ?? null,
-      eventTime: parsed.modificationIntent.newTime ?? parsed.eventTime ?? null,
-      deadline: parsed.deadline ?? null,
-      deadlineTime: parsed.eventTime ?? null,
-      submissionUrl: parsed.submissionUrl ?? null,
-      resourceUrls: parsed.resourceUrls,
-      attachmentNames: parsed.attachmentNames,
-      description: parsed.description,
-      requirements: [],
-      changeDescription: changeDesc,
-      targetEventTitle: targetTitle,
-      confidence,
-      needsConfirmation,
-      confirmationReason
-    };
+      return {
+        action,
+        type: parsed.type,
+        title: parsed.title,
+        subject: parsed.subject === "NEEDS_CONFIRMATION" ? null : parsed.subject,
+        eventDate: parsed.modificationIntent.newDate ?? parsed.eventDate ?? null,
+        eventTime: parsed.modificationIntent.newTime ?? parsed.eventTime ?? null,
+        deadline: parsed.deadline ?? null,
+        deadlineTime: parsed.eventTime ?? null,
+        submissionUrl: parsed.submissionUrl ?? null,
+        resourceUrls: parsed.resourceUrls,
+        attachmentNames: parsed.attachmentNames,
+        description: parsed.description,
+        requirements: [],
+        changeDescription: changeDesc,
+        targetEventTitle: targetTitle,
+        confidence,
+        needsConfirmation,
+        confirmationReason
+      };
+    });
+
+    return { events };
   }
 }
 
@@ -145,6 +161,14 @@ export function getActiveAIProvider(): AIProvider {
   return new DeterministicFallbackProvider();
 }
 
+export interface AIParseResult {
+  extraction: AIExtractionOutput;
+  extractions: AIExtractionOutput[];
+  providerUsed: string;
+  fallbackOccurred: boolean;
+  rawAIResponse?: string;
+}
+
 /**
  * Main application interface for parsing academic messages with AI.
  * The rest of the application calls this rather than directly calling Gemini.
@@ -153,21 +177,17 @@ export async function parseAcademicMessageWithAI(
   message: string,
   context: AIParseContext,
   customProvider?: AIProvider
-): Promise<{
-  extraction: AIExtractionOutput;
-  providerUsed: string;
-  fallbackOccurred: boolean;
-  rawAIResponse?: string;
-}> {
+): Promise<AIParseResult> {
   const provider = customProvider ?? getActiveAIProvider();
   let fallbackOccurred = false;
   let providerUsed = provider.name;
 
   try {
     const rawResult = await provider.extract(message, context);
-    const validated = validateAndSanitizeAIExtraction(rawResult);
+    const validated = validateAndSanitizeAIMultiExtraction(rawResult);
     return {
-      extraction: validated.data,
+      extraction: validated.data.events[0],
+      extractions: validated.data.events,
       providerUsed,
       fallbackOccurred
     };
@@ -176,8 +196,10 @@ export async function parseAcademicMessageWithAI(
     if (provider.name !== "deterministic-fallback") {
       const fallbackProvider = new DeterministicFallbackProvider();
       const fallbackResult = await fallbackProvider.extract(message, context);
+      const validated = validateAndSanitizeAIMultiExtraction(fallbackResult);
       return {
-        extraction: fallbackResult,
+        extraction: validated.data.events[0],
+        extractions: validated.data.events,
         providerUsed: fallbackProvider.name,
         fallbackOccurred: true
       };

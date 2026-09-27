@@ -21,6 +21,8 @@ export interface ProcessMessageInput {
 export interface ProcessMessageResult {
   action: "CREATED" | "UPDATED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC";
   item?: AcademicItem;
+  items?: AcademicItem[];
+  results?: ProcessMessageResult[];
   reason?: string;
   changeSummary?: string;
   beforeAfter?: any;
@@ -106,11 +108,88 @@ export async function processAcademicMessagePipeline(
     return {
       action: "IGNORED_DUPLICATE",
       reason: parsingResult.reason || "Duplicate message detected.",
-      item: parsingResult.item
+      item: parsingResult.item,
+      items: parsingResult.items
     };
   }
 
-  // 7. Handle Modification to Existing Event (Supabase Update + Notion Sync)
+  // 7. Multi-event handling: If message contains multiple distinct academic events / dates
+  if (parsingResult.results && parsingResult.results.length > 1) {
+    const persistedItems: AcademicItem[] = [];
+    const subResults: ProcessMessageResult[] = [];
+
+    for (const sub of parsingResult.results) {
+      if (sub.action === "UPDATED" && sub.item) {
+        const targetId = sub.updatedItemId || sub.item.id;
+        const latestChanges = sub.item.changeHistory.slice(-3);
+        const updated = await updateAcademicEvent(
+          targetId,
+          {
+            eventDate: sub.item.eventDate,
+            eventTime: sub.item.eventTime,
+            deadline: sub.item.deadline,
+            status: sub.item.status,
+            submissionUrl: sub.item.submissionUrl,
+            subject: sub.item.subject,
+            resourceUrls: sub.item.resourceUrls,
+            attachmentNames: sub.item.attachmentNames,
+            originalMessages: sub.item.originalMessages,
+            needsConfirmation: sub.item.needsConfirmation
+          },
+          latestChanges
+        );
+        const notionSync = updated ? await syncEventToNotion(updated, latestChanges) : { status: "SKIPPED" as const };
+        if (updated) persistedItems.push(updated);
+        subResults.push({
+          action: "UPDATED",
+          item: updated || undefined,
+          changeSummary: sub.changeSummary,
+          notionSync,
+          aiExtraction: sub.aiExtraction
+        });
+      } else if (sub.item) {
+        if (mappedSubject && sub.item.subject === "NEEDS_CONFIRMATION") {
+          sub.item.subject = mappedSubject;
+        }
+        if (sub.aiExtraction?.needsConfirmation || sub.confidence === "NEEDS_CONFIRMATION") {
+          sub.item.needsConfirmation = true;
+        }
+        const created = await createAcademicEvent(sub.item);
+        const notionSync = await syncEventToNotion(created);
+        persistedItems.push(created);
+        subResults.push({
+          action: "CREATED",
+          item: created,
+          notionSync,
+          aiExtraction: sub.aiExtraction,
+          confidence: sub.confidence
+        });
+      }
+    }
+
+    await recordRawMessage(rawMessage, {
+      source,
+      sourceGroup,
+      sourceSender,
+      messageTimestamp,
+      sourceMessageId,
+      processingStatus: "PROCESSED",
+      linkedEventId: persistedItems[0]?.id
+    });
+
+    return {
+      action: parsingResult.action,
+      item: persistedItems[0],
+      items: persistedItems,
+      results: subResults,
+      changeSummary: parsingResult.changeSummary,
+      providerUsed: parsingResult.providerUsed,
+      confidence: parsingResult.confidence,
+      reason: parsingResult.reason
+    };
+  }
+
+  // 8. Handle Single Modification to Existing Event (Supabase Update + Notion Sync)
   if (parsingResult.action === "UPDATED" && parsingResult.item) {
     const targetId = parsingResult.updatedItemId || parsingResult.item.id;
     const latestChanges = parsingResult.item.changeHistory.slice(-3);
@@ -152,6 +231,7 @@ export async function processAcademicMessagePipeline(
     return {
       action: "UPDATED",
       item: updated || undefined,
+      items: updated ? [updated] : [],
       changeSummary: parsingResult.changeSummary,
       beforeAfter: parsingResult.beforeAfter,
       notionSync,
@@ -160,7 +240,7 @@ export async function processAcademicMessagePipeline(
     };
   }
 
-  // 8. Handle New Event Creation (Supabase Insert + Notion Page Creation)
+  // 9. Handle Single New Event Creation (Supabase Insert + Notion Page Creation)
   if (parsingResult.item) {
     // If subject was mapped from course code, apply it
     if (mappedSubject && parsingResult.item.subject === "NEEDS_CONFIRMATION") {
@@ -191,6 +271,7 @@ export async function processAcademicMessagePipeline(
     return {
       action: "CREATED",
       item: created,
+      items: [created],
       notionSync,
       aiExtraction: parsingResult.aiExtraction,
       providerUsed: parsingResult.providerUsed,

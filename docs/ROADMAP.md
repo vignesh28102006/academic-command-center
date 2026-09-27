@@ -25,18 +25,21 @@
 - [ ] Original-message page/property
 
 ## V4 — WhatsApp collector
-- [ ] Explicit group allowlist
-- [ ] Local academic keyword filter
-- [ ] Message deduplication
-- [ ] Link extraction
-- [ ] Attachment metadata
-- [ ] Secure backend ingestion
+- [x] Explicit group allowlist
+- [x] Local academic keyword filter
+- [x] Message deduplication
+- [x] Link extraction
+- [x] Attachment metadata
+- [x] Secure backend ingestion
 
-## V5 — Automation
-- [ ] Deadline reminders
-- [ ] Exam reminders
-- [ ] Overdue reminders
-- [ ] Reminder rescheduling after changes
+## V5 — Automation (Phase 4B: Automated Reminders & Morning Briefing)
+- [x] Deadline reminders
+- [x] Exam reminders
+- [x] Overdue reminders
+- [x] Reminder rescheduling after changes
+- [x] 07:30 AM Asia/Kolkata Morning Briefing
+- [x] Reminder deduplication & versioning
+- [x] Pluggable notification providers (Console & Browser)
 
 ## V6 — Antigravity
 - [ ] Project-assignment classification

@@ -1,5 +1,9 @@
 import { AIProvider, AIParseContext } from "./provider";
-import { AIExtractionOutput, validateAndSanitizeAIExtraction } from "./schema";
+import {
+  AIExtractionOutput,
+  AIMultiEventExtractionOutput,
+  validateAndSanitizeAIMultiExtraction
+} from "./schema";
 
 export interface GeminiConfig {
   apiKey?: string;
@@ -20,7 +24,7 @@ export class GeminiProvider implements AIProvider {
     return Boolean(this.apiKey && this.apiKey.trim().length > 5);
   }
 
-  async extract(message: string, context: AIParseContext): Promise<AIExtractionOutput> {
+  async extract(message: string, context: AIParseContext): Promise<AIMultiEventExtractionOutput> {
     if (!this.isAvailable()) {
       throw new Error("GEMINI_API_KEY is not configured.");
     }
@@ -29,25 +33,59 @@ export class GeminiProvider implements AIProvider {
 Your task is to analyze natural language messages from faculty and college WhatsApp groups and extract structured academic events.
 
 CRITICAL RULES:
-1. Output JSON strictly matching the specified fields.
-2. DO NOT HALLUCINATE OR INVENT missing dates, times, subjects, or deadlines.
-3. If subject is not explicitly mentioned or clearly identifiable, return null.
-4. If a calendar date or deadline time is not specified in the message, return null.
-5. If an assignment says "Submit this soon" or has an ambiguous deadline without a date/time, set "needsConfirmation": true and "confirmationReason": "Deadline is not specified.".
-6. If the message is casual chatter (e.g., "Good morning sir", "ok", "thank you", "Happy birthday", stickers/greetings) without academic content, set "action": "NON_ACADEMIC".
-7. For relative dates, compute them relative to:
-   - Current Date: ${context.currentDate}
-   - Current DateTime: ${context.currentDateTime}
-   - Timezone: ${context.timezone}
+1. Output JSON strictly matching the envelope schema:
+   {
+     "events": [
+       {
+         "action": "CREATED" | "UPDATED" | "CANCELLED" | "POSTPONED" | "IGNORED_DUPLICATE" | "NON_ACADEMIC" | "NEEDS_CONFIRMATION",
+         "type": "ASSIGNMENT" | "EXAM" | "SLIP_TEST" | "QUIZ" | "LAB" | "PROJECT" | "PRESENTATION" | "COURSE" | "ANNOUNCEMENT" | "OTHER",
+         "title": string | null,
+         "subject": string | null,
+         "eventDate": "YYYY-MM-DD" | null,
+         "eventTime": string | null,
+         "deadline": string | null,
+         "deadlineTime": string | null,
+         "submissionUrl": string | null,
+         "resourceUrls": string[],
+         "attachmentNames": string[],
+         "description": string | null,
+         "requirements": string[],
+         "changeDescription": string | null,
+         "targetEventTitle": string | null,
+         "confidence": number,
+         "needsConfirmation": boolean,
+         "confirmationReason": string | null
+       }
+     ]
+   }
+2. MULTIPLE EVENTS / MULTIPLE DATES HANDLING:
+   - If a message contains multiple academic events or multiple dates (e.g. "Exams are next Tuesday and next Thursday", "OS exam next Tuesday and DBMS exam next Thursday", "Internal exams next Tuesday, Thursday and Saturday", "Lab exams are on Tuesday at 10 AM and Thursday at 2 PM"):
+     - You MUST output an array in "events" containing one entry for EACH event occurrence.
+     - DO NOT merge them into one event with an ambiguous date.
+     - DO NOT discard any date.
+     - If the title or subject is shared (e.g. "Exams are next Tuesday and next Thursday"), preserve the shared title context across all occurrences while keeping the dates separate (e.g. "Exam — Tuesday", "Exam — Thursday").
+     - If different subjects or tasks are mentioned (e.g. "Quiz 2 on Monday and Assignment 3 due Wednesday"), generate separate events for each subject/task.
+   - For a single-event message, simply output an "events" array containing 1 event item.
+3. RELATIVE DATE RESOLUTION:
+   - For relative dates, compute concrete YYYY-MM-DD calendar dates strictly relative to:
+     - Current Date: ${context.currentDate}
+     - Current DateTime: ${context.currentDateTime}
+     - Timezone: ${context.timezone}
+   - DO NOT guess or hallucinate the current date.
    - "today" = ${context.currentDate}
    - "tomorrow" = calendar date + 1 day
-   - "Monday" / "next Monday" = compute appropriate YYYY-MM-DD calendar date.
-8. If the message updates, postpones, or cancels an existing event from the provided existing events list:
+   - "Monday" / "next Monday" / "next Tuesday" / "next Thursday" = compute exact YYYY-MM-DD calendar date.
+4. DO NOT HALLUCINATE OR INVENT missing dates, times, subjects, or deadlines.
+5. If subject is not explicitly mentioned or clearly identifiable, return null.
+6. If a calendar date or deadline time is not specified in the message, return null.
+7. If an assignment says "Submit this soon" or has an ambiguous deadline without a date/time, set "needsConfirmation": true and "confirmationReason": "Deadline is not specified.".
+8. If the message is casual chatter (e.g. "Good morning sir", "ok", "thank you", "Happy birthday", stickers/greetings) without academic content, set "action": "NON_ACADEMIC".
+9. If the message updates, postpones, or cancels an existing event from the provided existing events list:
    - Set "action": "POSTPONED" | "UPDATED" | "CANCELLED"
    - Match targetEventTitle with existing item
    - Provide "changeDescription" describing what changed (e.g., "Event date changed from 2026-09-30 to 2026-10-03")
    - Do NOT duplicate the event.
-9. Provide a realistic "confidence" score between 0.0 and 1.0 based on clarity and completeness.`;
+10. Provide a realistic "confidence" score between 0.0 and 1.0 based on clarity and completeness.`;
 
     const userPrompt = JSON.stringify({
       context: {
@@ -104,7 +142,7 @@ CRITICAL RULES:
       throw new Error("Failed to parse Gemini candidate text as JSON.");
     }
 
-    const validated = validateAndSanitizeAIExtraction(parsedJson);
+    const validated = validateAndSanitizeAIMultiExtraction(parsedJson);
     return validated.data;
   }
 }

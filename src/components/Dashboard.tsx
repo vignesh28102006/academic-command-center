@@ -31,8 +31,10 @@ import {
   AlertCircle,
   Radio,
   RefreshCw,
-  ShieldCheck
+  ShieldCheck,
+  Bell
 } from "lucide-react";
+import ReminderCenter from "./ReminderCenter";
 
 type TabType =
   | "TODAY"
@@ -43,7 +45,8 @@ type TabType =
   | "SUBMISSIONS"
   | "ANNOUNCEMENTS"
   | "COMPLETED"
-  | "OVERDUE";
+  | "OVERDUE"
+  | "REMINDERS";
 
 const INITIAL_DEMO_ITEMS: AcademicItem[] = [
   {
@@ -259,7 +262,8 @@ export default function Dashboard() {
       SUBMISSIONS: 0,
       ANNOUNCEMENTS: 0,
       COMPLETED: 0,
-      OVERDUE: 0
+      OVERDUE: 0,
+      REMINDERS: 0
     };
 
     items.forEach(item => {
@@ -1350,13 +1354,20 @@ export default function Dashboard() {
         <TabButton active={activeTab === "ANNOUNCEMENTS"} onClick={() => setActiveTab("ANNOUNCEMENTS")} label="Announcements" count={tabCounts.ANNOUNCEMENTS} />
         <TabButton active={activeTab === "COMPLETED"} onClick={() => setActiveTab("COMPLETED")} label="Completed" count={tabCounts.COMPLETED} />
         <TabButton active={activeTab === "OVERDUE"} onClick={() => setActiveTab("OVERDUE")} label="Missed/Overdue" count={tabCounts.OVERDUE} alert={tabCounts.OVERDUE > 0} />
+        <TabButton active={activeTab === "REMINDERS"} onClick={() => setActiveTab("REMINDERS")} label="🔔 Reminders" />
       </nav>
 
-      {/* Filters & Search bar */}
-      <div
-        style={{
-          display: "flex",
-          gap: 10,
+      {activeTab === "REMINDERS" ? (
+        <div style={{ marginTop: 12 }}>
+          <ReminderCenter />
+        </div>
+      ) : (
+        <>
+          {/* Filters & Search bar */}
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
           flexWrap: "wrap",
           alignItems: "center",
           marginBottom: 20
@@ -1883,6 +1894,8 @@ export default function Dashboard() {
           })}
         </div>
       )}
+        </>
+      )}
     </div>
   );
 }
@@ -1920,7 +1933,7 @@ function TabButton({
   active: boolean;
   onClick: () => void;
   label: string;
-  count: number;
+  count?: number;
   alert?: boolean;
 }) {
   return (
@@ -1942,22 +1955,24 @@ function TabButton({
       }}
     >
       <span>{label}</span>
-      <span
-        style={{
-          fontSize: 11,
-          padding: "1px 6px",
-          borderRadius: 999,
-          background: active
-            ? (alert ? "#ef4444" : "#334155")
-            : (alert ? "#fee2e2" : "#f1f5f9"),
-          color: active
-            ? "#ffffff"
-            : (alert ? "#b91c1c" : "#475569"),
-          fontWeight: 700
-        }}
-      >
-        {count}
-      </span>
+      {count !== undefined && count > 0 && (
+        <span
+          style={{
+            fontSize: 11,
+            padding: "1px 6px",
+            borderRadius: 999,
+            background: active
+              ? (alert ? "#ef4444" : "#334155")
+              : (alert ? "#fee2e2" : "#f1f5f9"),
+            color: active
+              ? "#ffffff"
+              : (alert ? "#b91c1c" : "#475569"),
+            fontWeight: 700
+          }}
+        >
+          {count}
+        </span>
+      )}
     </button>
   );
 }

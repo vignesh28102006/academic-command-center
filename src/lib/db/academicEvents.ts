@@ -3,7 +3,13 @@ import { AcademicItem, ChangeRecord } from "../types";
 import { getChangeHistoryByEventId, recordChangeHistory } from "./changeHistory";
 
 // In-memory store when Supabase is not yet connected
-const inMemoryEvents: Map<string, AcademicItem> = new Map();
+const globalEventsStore = globalThis as unknown as {
+  __inMemoryEvents?: Map<string, AcademicItem>;
+};
+if (!globalEventsStore.__inMemoryEvents) {
+  globalEventsStore.__inMemoryEvents = new Map();
+}
+const inMemoryEvents: Map<string, AcademicItem> = globalEventsStore.__inMemoryEvents;
 
 // Initialize in-memory store with demo items so initial setup has data
 function initializeInMemoryIfEmpty() {
@@ -81,6 +87,7 @@ function mapRowToAcademicItem(row: any, history: ChangeRecord[] = []): AcademicI
     needsConfirmation: Boolean(row.needs_confirmation),
     confidence: row.confidence >= 0.9 ? "HIGH" : row.confidence >= 0.7 ? "MEDIUM" : "NEEDS_CONFIRMATION",
     confidenceScore: row.confidence ?? 0.8,
+    eventVersion: row.event_version !== undefined && row.event_version !== null ? Number(row.event_version) : 1,
     lastSyncedAt: row.last_synced_at || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -179,6 +186,7 @@ export async function createAcademicEvent(item: AcademicItem): Promise<AcademicI
   const record: AcademicItem = {
     ...item,
     id,
+    eventVersion: item.eventVersion || 1,
     createdAt: item.createdAt || now,
     updatedAt: item.updatedAt || now,
     changeHistory: item.changeHistory || []
@@ -221,6 +229,7 @@ export async function createAcademicEvent(item: AcademicItem): Promise<AcademicI
       notion_page_id: record.notionPageId || null,
       needs_confirmation: Boolean(record.needsConfirmation),
       confidence: record.confidenceScore ?? (record.confidence === "HIGH" ? 0.95 : record.confidence === "MEDIUM" ? 0.75 : 0.5),
+      event_version: record.eventVersion || 1,
       last_synced_at: record.lastSyncedAt || null,
       created_at: record.createdAt,
       updated_at: record.updatedAt
@@ -252,10 +261,12 @@ export async function updateAcademicEvent(
   }
 
   const now = new Date().toISOString();
+  const newVersion = (existing.eventVersion || 1) + 1;
   const updatedItem: AcademicItem = {
     ...existing,
     ...updates,
     id,
+    eventVersion: newVersion,
     updatedAt: now,
     changeHistory: [...existing.changeHistory, ...(newChanges || [])]
   };
@@ -268,7 +279,8 @@ export async function updateAcademicEvent(
   }
 
   const updatePayload: any = {
-    updated_at: now
+    updated_at: now,
+    event_version: newVersion
   };
 
   if (updates.title !== undefined) updatePayload.title = updates.title;

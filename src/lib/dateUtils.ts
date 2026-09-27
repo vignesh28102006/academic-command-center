@@ -147,12 +147,121 @@ export function extractTimeString(text: string): string | undefined {
   const timeMatch = text.match(/\b(?:before|at|by|until|till)?\s*(\d{1,2}[:.]\d{2}\s*(?:am|pm)?)\b/i) ??
                     text.match(/\b(?:before|at|by|until|till)?\s*(\d{1,2}\s*(?:am|pm))\b/i);
   if (timeMatch) {
-    const clean = timeMatch[1].trim().replace(/\./, ":");
+    let clean = timeMatch[1].trim().replace(/\./, ":");
+    if (!clean.includes(":")) {
+      clean = clean.replace(/^(\d{1,2})\s*([ap]m)$/i, "$1:00 $2");
+    }
     // Standardize AM/PM casing
     return clean.replace(/([ap]m)/i, (_, s) => " " + s.toUpperCase()).replace(/\s+/, " ").trim();
   }
 
   return undefined;
+}
+
+export const DAY_OF_WEEK_MAP: Record<string, number> = {
+  sunday: 0, sun: 0,
+  monday: 1, mon: 1,
+  tuesday: 2, tue: 2, tues: 2,
+  wednesday: 3, wed: 3,
+  thursday: 4, thu: 4, thur: 4, thurs: 4,
+  friday: 5, fri: 5,
+  saturday: 6, sat: 6
+};
+
+/**
+ * Resolve relative day of week (e.g. "Monday", "next Tuesday", "this Thursday") to a concrete Date
+ */
+export function resolveRelativeDay(
+  dayName: string,
+  referenceDate: Date = new Date(),
+  modifier?: "this" | "next" | null,
+  minDate?: Date
+): Date {
+  const targetDay = DAY_OF_WEEK_MAP[dayName.toLowerCase()];
+  if (targetDay === undefined) return new Date(referenceDate);
+
+  const result = new Date(referenceDate);
+  const currentDay = referenceDate.getDay();
+
+  let diff = (targetDay - currentDay + 7) % 7;
+
+  if (modifier === "next") {
+    if (diff === 0) {
+      diff = 7;
+    } else if (currentDay >= 5) {
+      // Friday, Saturday, Sunday: "next Tuesday" means Tuesday of the upcoming week (diff is already +3..+5)
+    } else if (diff <= 3) {
+      // Mon-Thu: "next <day>" for a day closely ahead (1-3 days) refers to next week
+      diff += 7;
+    }
+  } else if (modifier === "this") {
+    // "this Monday" -> upcoming Monday (or today if diff === 0)
+  } else {
+    // No modifier: if today is target day, default to next occurrence (+7 days)
+    if (diff === 0) {
+      diff = 7;
+    }
+  }
+
+  result.setDate(referenceDate.getDate() + diff);
+
+  // If minDate is provided, ensure result is on or after minDate
+  if (minDate && result < minDate) {
+    while (result < minDate) {
+      result.setDate(result.getDate() + 7);
+    }
+  }
+
+  return result;
+}
+
+export interface ExtractedOccurrenceDate {
+  dateStr: string; // YYYY-MM-DD
+  timeStr?: string; // e.g. "10:00 AM", "2:00 PM"
+  rawDateSnippet: string; // e.g. "next Tuesday", "Thursday at 2 PM"
+  dayName?: string; // e.g. "Tuesday", "Thursday"
+  isRelative: boolean;
+}
+
+/**
+ * Extract multiple dates from text, preserving sequence and resolving relative references
+ */
+export function extractMultipleDates(
+  text: string,
+  referenceDate: Date = new Date()
+): ExtractedOccurrenceDate[] {
+  const results: ExtractedOccurrenceDate[] = [];
+  const t = text.trim();
+
+  // Pattern for relative day mentions: (this|next)?\s*(monday|tuesday|wednesday|thursday|friday|saturday|sunday)(?:\s+at\s+[\d:.]+\s*(?:am|pm)?)?
+  const dayPattern = /\b(?:(this|next)\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b(?:\s+(?:at|by|before)\s*(\d{1,2}(?:[:.]\d{2})?\s*(?:am|pm)?))?/gi;
+
+  let lastDate: Date | undefined;
+  let match: RegExpExecArray | null;
+
+  while ((match = dayPattern.exec(t)) !== null) {
+    const modifier = (match[1]?.toLowerCase() as "this" | "next") || null;
+    const dayName = match[2];
+    const timeRaw = match[3];
+
+    // Compute concrete date
+    const concrete = resolveRelativeDay(dayName, referenceDate, modifier, lastDate);
+    lastDate = concrete;
+
+    const timeStr = timeRaw ? extractTimeString(timeRaw) : undefined;
+    const fullSnippet = match[0].trim();
+
+    // Avoid duplicate identical dates in the exact same index
+    results.push({
+      dateStr: toLocalDateString(concrete),
+      timeStr,
+      rawDateSnippet: fullSnippet,
+      dayName: dayName.charAt(0).toUpperCase() + dayName.slice(1).toLowerCase(),
+      isRelative: true
+    });
+  }
+
+  return results;
 }
 
 /**
@@ -165,7 +274,7 @@ export function extractDateString(
   const t = text.trim();
   const currentYear = referenceDate.getFullYear();
 
-  // 1. Check relative: today / tomorrow
+  // 1. Check relative: today / tonight
   if (/\b(today|tonight)\b/i.test(t)) {
     const dateStr = toLocalDateString(referenceDate);
     const timeStr = extractTimeString(t);
@@ -177,6 +286,7 @@ export function extractDateString(
     };
   }
 
+  // 2. Check relative: tomorrow
   if (/\b(tomorrow)\b/i.test(t)) {
     const nextDay = new Date(referenceDate);
     nextDay.setDate(nextDay.getDate() + 1);
@@ -190,7 +300,35 @@ export function extractDateString(
     };
   }
 
-  // 2. Numeric DD-MM-YYYY or DD/MM/YYYY or YYYY-MM-DD
+  // 3. Check relative: day after tomorrow
+  if (/\bday\s+after\s+tomorrow\b/i.test(t)) {
+    const nextDay = new Date(referenceDate);
+    nextDay.setDate(nextDay.getDate() + 2);
+    const dateStr = toLocalDateString(nextDay);
+    const timeStr = extractTimeString(t);
+    return {
+      dateStr,
+      timeStr,
+      isRelative: true,
+      confidence: "HIGH"
+    };
+  }
+
+  // 4. Check relative day of week: "next Tuesday", "this Monday", "Monday", etc.
+  const dayMatch = t.match(/\b(?:(this|next)\s+)?(monday|tuesday|wednesday|thursday|friday|saturday|sunday|mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)\b/i);
+  if (dayMatch) {
+    const modifier = (dayMatch[1]?.toLowerCase() as "this" | "next") || null;
+    const dayName = dayMatch[2];
+    const resolved = resolveRelativeDay(dayName, referenceDate, modifier);
+    return {
+      dateStr: toLocalDateString(resolved),
+      timeStr: extractTimeString(t),
+      isRelative: true,
+      confidence: "HIGH"
+    };
+  }
+
+  // 5. Numeric DD-MM-YYYY or DD/MM/YYYY or YYYY-MM-DD
   const dmyMatch = t.match(/\b(\d{1,2})[-/](\d{1,2})[-/](\d{4})\b/);
   if (dmyMatch) {
     const day = parseInt(dmyMatch[1], 10);
@@ -221,8 +359,7 @@ export function extractDateString(
     }
   }
 
-  // 3. Named month format: "30 Sep 2026", "30th September", "3 October", "Oct 3"
-  // e.g. "30-09-2026", "30 September 2026", "3 October", "Oct 3rd"
+  // 6. Named month format: "30 Sep 2026", "30th September", "3 October", "Oct 3"
   const dayMonthMatch = t.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)(?:\s+(\d{4}))?\b/) ??
                         t.match(/\b([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?(?:\s+(\d{4}))?\b/);
 
@@ -252,7 +389,7 @@ export function extractDateString(
     }
   }
 
-  // 4. Time only (e.g., "before 11:35 am")
+  // 7. Time only (e.g., "before 11:35 am")
   const timeOnly = extractTimeString(t);
   if (timeOnly) {
     return {

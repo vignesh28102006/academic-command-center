@@ -214,6 +214,84 @@ This script exercises:
 
 ---
 
+## Automated Reminders & Morning Briefing (Phase 4B)
+
+Phase 4B introduces a deterministic, server-side notification and morning briefing engine that reads authoritative academic events from Supabase and schedules timely alerts.
+
+> [!IMPORTANT]
+> **Server-Side Independence:**  
+> Reminder generation and scheduling is entirely server-side and **does not depend on the browser dashboard being open**. Schedules are calculated from Supabase state and can be triggered on-demand, via local scheduler, or by cloud cron jobs.
+
+### Architecture Flow
+
+```
+Supabase (Source of Truth)
+    ↓
+Reminder Engine (Server-Side Calculation & Invalidation)
+    ↓
+Reminder Scheduler (Vercel Cron / Supabase Function / Serverless Trigger)
+    ↓
+Notification Provider Abstraction (Console, Browser Push)
+    ↓
+User
+```
+
+### Configurable Reminder Intervals
+Default intervals:
+- **7 days before**
+- **3 days before**
+- **1 day before**
+- **3 hours before**
+- **1 hour before**
+
+*Graceful Interval Pruning:* If an event is scheduled for tomorrow, irrelevant 7-day and 3-day reminder intervals from the past are automatically skipped.
+
+### Event Type Awareness & Priority
+- **Assignments & Projects:** Primary trigger is `deadline`. Displays `"due tomorrow at 11:59 PM"` and includes `"Open Submission: [URL]"` when a submission link is present.
+- **Exams, Slip Tests & Quizzes:** Primary trigger is `eventDate` + `eventTime`. Displays `"[Subject] [Title] exam is tomorrow at 10:00 AM."`
+- **Needs-Confirmation Events:** Emits `"Needs confirmation — deadline unclear. Please confirm the deadline."` without inventing arbitrary dates.
+- **Overdue Events:** Detected when the deadline or event date has passed without completion. Governed by a controlled overdue policy (maximum one overdue alert per event per day).
+- **Priority Scoring:** `URGENT` (overdue, exams within 24h, ≤3h remaining), `HIGH` (1d, 3d), `REVIEW` (needs confirmation), `NORMAL`.
+
+### Event Modifications & Postponements
+When an exam or assignment is postponed:
+1. All prior `SCHEDULED` reminders for older event versions are immediately marked `CANCELLED`.
+2. Replacement reminders are scheduled reflecting the new target date and deadline.
+3. Cancellations (`status = 'CANCELLED'`) or completions (`status = 'COMPLETED'`) cancel all future scheduled reminders.
+4. Deduplication key `event_id + event_version + reminder_type + scheduled_for` guarantees that no alert is ever sent twice.
+
+### Daily Morning Briefing
+- **Default Schedule:** Daily at **07:30 AM (Asia/Kolkata)**.
+- **Structured Categories:**
+  1. Events due **Today**
+  2. Events due **Tomorrow**
+  3. **Upcoming** exams and milestones (next 7 days)
+  4. Events **requiring confirmation**
+  5. **Overdue** items
+- **Preview Anytime:** Click **"Preview Morning Briefing"** in the Reminder Center or call `GET /api/briefing/preview`.
+
+### Notification Provider Abstraction
+- `ConsoleNotificationProvider`: Development default logging alerts cleanly:
+  ```text
+  [ACADEMIC REMINDER] [URGENT]
+  DBMS Slip Test 2 is tomorrow at 2:00 PM.
+  ```
+- `BrowserNotificationProvider`: Safe HTML5 browser push notifications with permission guards (`granted`, `denied`, `default`, `unsupported`). Never crashes in SSR or environments without permissions.
+- `MockNotificationProvider`: Side-effect-free provider used during unit tests.
+
+### How to Test Reminders
+1. **Unit & Regression Tests (30+ scenarios):**
+   ```bash
+   npm test
+   ```
+2. **Live API Integration Suite:**
+   With local backend running on `http://localhost:3000`:
+   ```bash
+   node scripts/test-reminders.mjs
+   ```
+3. **Interactive Dashboard:**
+   Open `http://localhost:3000` and select the **🔔 Reminders** tab to toggle the engine, preview briefings, or click **"Send Test Reminder"**.
+
 ## Project Structure
 
 ```

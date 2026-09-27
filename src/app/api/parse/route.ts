@@ -10,6 +10,8 @@ import { recordRawMessage } from "@/lib/db/rawMessages";
 import { syncEventToNotion } from "@/lib/notion/sync";
 import { AcademicItem } from "@/lib/types";
 
+export const dynamic = "force-dynamic";
+
 export async function POST(request: Request) {
   const body = await request.json().catch(() => null);
 
@@ -48,9 +50,54 @@ export async function POST(request: Request) {
     );
 
     let persistedItem = result.item;
+    let persistedItems = result.items || (result.item ? [result.item] : []);
     let notionSync: any = { status: "SKIPPED" };
 
-    if (result.action === "UPDATED" && result.item) {
+    if (result.results && result.results.length > 1) {
+      const persistedList: AcademicItem[] = [];
+      for (const sub of result.results) {
+        if (sub.action === "UPDATED" && sub.item) {
+          const targetId = sub.updatedItemId || sub.item.id;
+          const latestChanges = sub.item.changeHistory.slice(-3);
+          const updated = await updateAcademicEvent(
+            targetId,
+            {
+              eventDate: sub.item.eventDate,
+              eventTime: sub.item.eventTime,
+              deadline: sub.item.deadline,
+              status: sub.item.status,
+              submissionUrl: sub.item.submissionUrl,
+              subject: sub.item.subject,
+              resourceUrls: sub.item.resourceUrls,
+              attachmentNames: sub.item.attachmentNames,
+              originalMessages: sub.item.originalMessages,
+              needsConfirmation: sub.item.needsConfirmation
+            },
+            latestChanges
+          ) || sub.item;
+          await syncEventToNotion(updated, latestChanges);
+          persistedList.push(updated);
+        } else if (sub.item) {
+          if (mappedSubject && sub.item.subject === "NEEDS_CONFIRMATION") {
+            sub.item.subject = mappedSubject;
+          }
+          if (sub.aiExtraction?.needsConfirmation || sub.confidence === "NEEDS_CONFIRMATION") {
+            sub.item.needsConfirmation = true;
+          }
+          const created = await createAcademicEvent(sub.item);
+          await syncEventToNotion(created);
+          persistedList.push(created);
+        }
+      }
+      persistedItems = persistedList;
+      persistedItem = persistedList[0];
+      await recordRawMessage(rawMessage, {
+        sourceGroup,
+        sourceSender,
+        processingStatus: "PROCESSED",
+        linkedEventId: persistedItem?.id
+      });
+    } else if (result.action === "UPDATED" && result.item) {
       const targetId = result.updatedItemId || result.item.id;
       const latestChanges = result.item.changeHistory.slice(-3);
       persistedItem = await updateAcademicEvent(
@@ -106,6 +153,7 @@ export async function POST(request: Request) {
       result: {
         action: result.action,
         item: persistedItem,
+        items: persistedItems,
         updatedItemId: result.updatedItemId,
         changeSummary: result.changeSummary,
         reason: result.reason,
@@ -113,6 +161,7 @@ export async function POST(request: Request) {
       },
       notionSync,
       aiExtraction: result.aiExtraction ?? null,
+      aiExtractions: result.aiExtractions ?? null,
       validation: {
         valid: true,
         confidenceScore: result.aiExtraction?.confidence ?? null,
