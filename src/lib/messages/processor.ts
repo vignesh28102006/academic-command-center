@@ -8,6 +8,8 @@ import { hashMessage, isMessageProcessed, recordRawMessage } from "../db/rawMess
 import { resolveSubjectCode } from "../db/subjectMappings";
 import { syncEventToNotion } from "../notion/sync";
 import { AcademicItem } from "../types";
+import { isGroupAllowed } from "../collector/allowedGroups";
+import { classifyAcademicMessage } from "../collector/relevanceFilter";
 
 export interface ProcessMessageInput {
   message: string;
@@ -46,7 +48,32 @@ export async function processAcademicMessagePipeline(
   const messageTimestamp = input.messageTimestamp?.trim();
   const sourceMessageId = input.sourceMessageId?.trim();
 
-  // 1. Message Hash Deduplication Check
+  // 1a. Strict Group Allowlist Gate (Disallowed groups must NEVER reach Gemini, Supabase, or Notion)
+  if (sourceGroup && !isGroupAllowed(sourceGroup)) {
+    return {
+      action: "NON_ACADEMIC",
+      reason: `Group '${sourceGroup}' is not in the allowed academic groups list.`
+    };
+  }
+
+  // 1b. Strict Academic Relevance Gate (Drop advertisements, attendance-only, chatter before AI)
+  const relevance = classifyAcademicMessage(rawMessage);
+  if (!relevance.shouldProcess) {
+    await recordRawMessage(rawMessage, {
+      source,
+      sourceGroup,
+      sourceSender,
+      messageTimestamp,
+      sourceMessageId,
+      processingStatus: "NON_ACADEMIC"
+    });
+    return {
+      action: "NON_ACADEMIC",
+      reason: relevance.reason
+    };
+  }
+
+  // 1c. Message Hash Deduplication Check
   const messageHash = hashMessage(rawMessage);
   const alreadyProcessed = await isMessageProcessed(messageHash);
   if (alreadyProcessed) {

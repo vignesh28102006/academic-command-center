@@ -1,5 +1,6 @@
 import { AcademicItem, AcademicType } from "./types";
 import { extractDateString, extractMultipleDates, extractTimeString, toLocalDateString } from "./dateUtils";
+import { isPromotionalMessage, isPureAttendanceMessage } from "./collector/relevanceFilter";
 
 const URL_REGEX = /https?:\/\/[^\s)\]]+/gi;
 
@@ -38,7 +39,13 @@ export function isNonAcademicMessage(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.length < 3) return true;
 
-  // Has explicit non-academic match and no academic keywords
+  // 1. Promotional / Advertisement check
+  if (isPromotionalMessage(trimmed)) return true;
+
+  // 2. Pure attendance statement check (unless mixed with an academic event)
+  if (isPureAttendanceMessage(trimmed)) return true;
+
+  // 3. Has explicit non-academic match and no academic keywords
   const matchesNonAcademic = NON_ACADEMIC_PATTERNS.some(p => p.test(trimmed));
   const hasAcademicKeyword = /\b(exam|test|slip test|quiz|assignment|lab|project|submit|deadline|postpone|postponed|marks|grade|lecture|class|syllabus|record|session)\b/i.test(trimmed);
 

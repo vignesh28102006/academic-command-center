@@ -4,6 +4,8 @@ import { processAcademicMessagePipeline } from "@/lib/messages/processor";
 import { recordCollectorMetric, getCollectorStats } from "@/lib/collector/stats";
 import { isMessageEligibleForBackfill } from "@/lib/dateUtils";
 import { updateCollectorGroupCursor } from "@/lib/db/collectorState";
+import { isGroupAllowed, getCanonicalGroupName } from "@/lib/collector/allowedGroups";
+import { classifyAcademicMessage } from "@/lib/collector/relevanceFilter";
 
 const collectorMessageSchema = z.object({
   message: z.string().min(1, "message cannot be empty"),
@@ -65,16 +67,31 @@ export async function POST(request: Request) {
 
     const { message, sourceGroup, sourceSender, messageTimestamp, sourceMessageId } = parseResult.data;
 
-    // Boundary Check: Messages before September 10, 2026 are strictly ignored
+    // 2a. Strict Group Allowlist Validation (Group filter happens FIRST!)
+    // Disallowed groups (e.g. embedded project groups, friends, family) must NEVER reach Gemini, Supabase, or Notion.
+    if (!isGroupAllowed(sourceGroup)) {
+      return NextResponse.json(
+        {
+          error: "GROUP_NOT_ALLOWED",
+          message: `Group '${sourceGroup}' is not in the allowed academic groups list.`,
+          sourceGroup
+        },
+        { status: 403 }
+      );
+    }
+
+    const canonicalGroup = getCanonicalGroupName(sourceGroup) || sourceGroup;
+
+    // 2b. Boundary Check: Messages before September 10, 2026 are strictly ignored
     if (messageTimestamp && !isMessageEligibleForBackfill(messageTimestamp)) {
       recordCollectorMetric({
         message,
-        sourceGroup,
+        sourceGroup: canonicalGroup,
         result: "NON_ACADEMIC",
         receivedAt: messageTimestamp
       });
-      await updateCollectorGroupCursor(sourceGroup, {
-        groupName: sourceGroup,
+      await updateCollectorGroupCursor(canonicalGroup, {
+        groupName: canonicalGroup,
         messagesScannedIncrement: 1,
         messagesIgnoredIncrement: 1
       });
@@ -83,6 +100,32 @@ export async function POST(request: Request) {
           success: true,
           action: "IGNORED_OUT_OF_RANGE",
           reason: "Message timestamp is prior to the September 10, 2026 initial backfill boundary."
+        },
+        { status: 200 }
+      );
+    }
+
+    // 2c. Strict Academic Relevance Gate (Deterministic pre-AI classification)
+    // Drops PROMOTIONAL (e.g. real estate/EMI ads), ATTENDANCE_ONLY, CHATTER, and NON_ACADEMIC before Gemini.
+    const relevance = classifyAcademicMessage(message);
+    if (!relevance.shouldProcess) {
+      recordCollectorMetric({
+        message,
+        sourceGroup: canonicalGroup,
+        result: "NON_ACADEMIC",
+        receivedAt: messageTimestamp
+      });
+      await updateCollectorGroupCursor(canonicalGroup, {
+        groupName: canonicalGroup,
+        messagesScannedIncrement: 1,
+        messagesIgnoredIncrement: 1
+      });
+      return NextResponse.json(
+        {
+          success: true,
+          action: "NON_ACADEMIC",
+          category: relevance.category,
+          reason: relevance.reason
         },
         { status: 200 }
       );

@@ -78,16 +78,35 @@ export interface RawMessageRecord {
   sourceMessageId?: string;
 }
 
+export type CollectorScanStatus =
+  | "IDLE"
+  | "SCANNING"
+  | "COMPLETE"
+  | "ERROR"
+  | "PERSONAL_IGNORED"
+  | "GROUP_NOT_MONITORED"
+  | "WHATSAPP_UNAVAILABLE";
+
 export interface CollectorStats {
   endpointStatus: "CONFIGURED" | "AWAITING_SECRET";
   currentGroup?: string | null;
   chatType?: "GROUP" | "PERSONAL" | null;
   collectionStatus?: "ACTIVE" | "PAUSED" | "IGNORED";
+  scanStatus?: CollectorScanStatus;
+  scanStartedAt?: string | null;
+  scanCompletedAt?: string | null;
+  messagesScanned?: number;
+  academicMessages?: number;
+  messagesIgnored?: number;
+  duplicates?: number;
+  eventsCreated: number;
+  eventsUpdated: number;
+  errors?: number;
+  lastProcessedTimestamp?: string | null;
+  lastError?: string | null;
   totalReceived: number;
   nonAcademic: number;
   duplicate: number;
-  eventsCreated: number;
-  eventsUpdated: number;
   lastReceivedAt: string | null;
   lastProcessedMessage: string | null;
   lastResult: string | null;

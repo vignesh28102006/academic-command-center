@@ -188,8 +188,8 @@ export function resolveRelativeDay(
   if (modifier === "next") {
     if (diff === 0) {
       diff = 7;
-    } else if (currentDay >= 5) {
-      // Friday, Saturday, Sunday: "next Tuesday" means Tuesday of the upcoming week (diff is already +3..+5)
+    } else if (currentDay === 0 || currentDay >= 5) {
+      // Friday, Saturday, Sunday: "next Tuesday" means Tuesday of the upcoming week (diff is already +2..+5)
     } else if (diff <= 3) {
       // Mon-Thu: "next <day>" for a day closely ahead (1-3 days) refers to next week
       diff += 7;

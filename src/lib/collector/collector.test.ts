@@ -38,7 +38,7 @@ async function runPhase4ATests() {
   // ---------------------------------------------------------------------------
   const req1 = makeRequest({
     message: "OS Assignment 1 due tomorrow",
-    sourceGroup: "CSE-C Official 2024"
+    sourceGroup: "CSE-C Announcements"
   });
   const res1 = await handleCollectorMessage(req1);
   assert.strictEqual(res1.status, 401, "Missing Authorization header must return HTTP 401");
@@ -52,7 +52,7 @@ async function runPhase4ATests() {
   const req2 = makeRequest(
     {
       message: "OS Assignment 1 due tomorrow",
-      sourceGroup: "CSE-C Official 2024"
+      sourceGroup: "CSE-C Announcements"
     },
     "Bearer wrong-invalid-secret"
   );
@@ -241,7 +241,7 @@ async function runPhase4ATests() {
   const req7 = makeRequest(
     {
       message: validMessage,
-      sourceGroup: "CSE-C Official 2024",
+      sourceGroup: "Machine Learning CSE-C",
       sourceSender: "OS Faculty",
       messageTimestamp: "2026-10-01T09:30:00Z",
       sourceMessageId: `wamid.HBgL${runTag}`
@@ -255,7 +255,7 @@ async function runPhase4ATests() {
   assert.strictEqual(data7.action, "CREATED");
   assert.ok(data7.item?.id, "Created event must have a database ID");
   assert.strictEqual(data7.item?.submissionUrl, `https://forms.gle/os-${runTag}`);
-  console.log("✓ Test 7 passed: Valid academic message ingested from 'CSE-C Official 2024'");
+  console.log("✓ Test 7 passed: Valid academic message ingested from 'Machine Learning CSE-C'");
 
   // ---------------------------------------------------------------------------
   // Test 8: Source Metadata Preservation
@@ -264,7 +264,7 @@ async function runPhase4ATests() {
   const foundRaw = rawList.find(r => r.messageText === validMessage);
   assert.ok(foundRaw, "Raw message must be stored in database");
   assert.strictEqual(foundRaw.source, "WHATSAPP_WEB", "Source must be preserved as WHATSAPP_WEB");
-  assert.strictEqual(foundRaw.sourceGroup, "CSE-C Official 2024", "sourceGroup must match");
+  assert.strictEqual(foundRaw.sourceGroup, "Machine Learning CSE-C", "sourceGroup must match");
   assert.strictEqual(foundRaw.sourceSender, "OS Faculty", "sourceSender must match");
   assert.strictEqual(foundRaw.sourceMessageId, `wamid.HBgL${runTag}`, "sourceMessageId must be recorded");
   console.log("✓ Test 8 passed: Source metadata preserved in raw_messages (source=WHATSAPP_WEB)");
@@ -275,7 +275,7 @@ async function runPhase4ATests() {
   const req9 = makeRequest(
     {
       message: "Good morning sir! Happy birthday 🎂🎉",
-      sourceGroup: "CSE-C Official 2024",
+      sourceGroup: "Machine Learning CSE-C",
       sourceSender: "Student A"
     },
     `Bearer ${TEST_SECRET}`
@@ -292,7 +292,7 @@ async function runPhase4ATests() {
   const req10 = makeRequest(
     {
       message: validMessage,
-      sourceGroup: "CSE-C Official 2024",
+      sourceGroup: "Machine Learning CSE-C",
       sourceSender: "OS Faculty"
     },
     `Bearer ${TEST_SECRET}`
@@ -359,11 +359,13 @@ async function runPhase4ATests() {
   console.log("✓ Test 11 passed: Switching between groups and personal chat updates collector status correctly");
 
   // ---------------------------------------------------------------------------
-  // Test 12: Academic Message from another group (e.g. "General")
+  // Test 12: Group Allowlist Enforcement (Disallowed groups rejected; Allowed groups accepted)
   // ---------------------------------------------------------------------------
   const genTag = Date.now().toString().slice(-4);
   const genMsg = `Semester Exam timetable has been published. Mid-terms start from 20 Nov: https://portal.college.edu/exams-${genTag}`;
-  const req12 = makeRequest(
+
+  // 12a: Disallowed group "General" rejected with 403 GROUP_NOT_ALLOWED
+  const req12Disallowed = makeRequest(
     {
       message: genMsg,
       sourceGroup: "General",
@@ -373,12 +375,28 @@ async function runPhase4ATests() {
     },
     `Bearer ${TEST_SECRET}`
   );
-  const res12 = await handleCollectorMessage(req12);
-  assert.strictEqual(res12.status, 201);
-  const data12 = await res12.json();
-  assert.strictEqual(data12.action, "CREATED");
-  assert.strictEqual(data12.item?.sourceGroup, "General");
-  console.log("✓ Test 12 passed: Academic message from generic group 'General' accepted and processed");
+  const res12Disallowed = await handleCollectorMessage(req12Disallowed);
+  assert.strictEqual(res12Disallowed.status, 403, "Disallowed group 'General' must return HTTP 403");
+  const data12Disallowed = await res12Disallowed.json();
+  assert.strictEqual(data12Disallowed.error, "GROUP_NOT_ALLOWED");
+
+  // 12b: Allowed group "Computer Networks CSE-C" accepted with 201 CREATED
+  const req12Allowed = makeRequest(
+    {
+      message: genMsg,
+      sourceGroup: "Computer Networks CSE-C",
+      sourceSender: "CN Faculty",
+      messageTimestamp: "2026-10-02T10:00:00Z",
+      sourceMessageId: `wamid.CN${genTag}`
+    },
+    `Bearer ${TEST_SECRET}`
+  );
+  const res12Allowed = await handleCollectorMessage(req12Allowed);
+  assert.strictEqual(res12Allowed.status, 201);
+  const data12Allowed = await res12Allowed.json();
+  assert.strictEqual(data12Allowed.action, "CREATED");
+  assert.strictEqual(data12Allowed.item?.sourceGroup, "Computer Networks CSE-C");
+  console.log("✓ Test 12 passed: Disallowed group rejected with 403 and allowed group accepted with 201");
 
   // ---------------------------------------------------------------------------
   // Test 13: Postponement Message Updates Existing Event & Records Change History
@@ -388,7 +406,7 @@ async function runPhase4ATests() {
   const req13a = makeRequest(
     {
       message: initialSlipTest,
-      sourceGroup: "CSE-C Official 2024",
+      sourceGroup: "TOC 23CSE303 - CSE-C",
       sourceSender: "Prof Krishna"
     },
     `Bearer ${TEST_SECRET}`
@@ -402,7 +420,7 @@ async function runPhase4ATests() {
   const req13b = makeRequest(
     {
       message: postponementMsg,
-      sourceGroup: "CSE-C Official 2024",
+      sourceGroup: "TOC 23CSE303 - CSE-C",
       sourceSender: "Prof Krishna"
     },
     `Bearer ${TEST_SECRET}`
@@ -526,7 +544,7 @@ async function runPhase4ATests() {
   const oldMessageReq = makeRequest(
     {
       message: "Old announcement from early September",
-      sourceGroup: "CSE-C Official 2024",
+      sourceGroup: "CSE-C Announcements",
       sourceSender: "Faculty",
       messageTimestamp: "2026-09-05T10:00:00+05:30"
     },

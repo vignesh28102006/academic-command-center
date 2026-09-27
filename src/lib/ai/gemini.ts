@@ -79,13 +79,14 @@ CRITICAL RULES:
 5. If subject is not explicitly mentioned or clearly identifiable, return null.
 6. If a calendar date or deadline time is not specified in the message, return null.
 7. If an assignment says "Submit this soon" or has an ambiguous deadline without a date/time, set "needsConfirmation": true and "confirmationReason": "Deadline is not specified.".
-8. If the message is casual chatter (e.g. "Good morning sir", "ok", "thank you", "Happy birthday", stickers/greetings) without academic content, set "action": "NON_ACADEMIC".
-9. If the message updates, postpones, or cancels an existing event from the provided existing events list:
+8. If the message is casual chatter (e.g. "Good morning sir", "ok", "thank you", "Happy birthday", stickers/greetings), a promotional advertisement / commercial spam (e.g. real estate, EMI offers, sales pitches, investment offers, property ads), or a pure attendance status announcement without an academic assignment/exam, set "action": "NON_ACADEMIC".
+9. DO NOT create an event with type "OTHER" for promotional, commercial, or non-academic messages. A URL, date, or number alone in a promotional ad or attendance notice does NOT make it an academic event.
+10. If the message updates, postpones, or cancels an existing event from the provided existing events list:
    - Set "action": "POSTPONED" | "UPDATED" | "CANCELLED"
    - Match targetEventTitle with existing item
    - Provide "changeDescription" describing what changed (e.g., "Event date changed from 2026-09-30 to 2026-10-03")
    - Do NOT duplicate the event.
-10. Provide a realistic "confidence" score between 0.0 and 1.0 based on clarity and completeness.`;
+11. Provide a realistic "confidence" score between 0.0 and 1.0 based on clarity and completeness.`;
 
     const userPrompt = JSON.stringify({
       context: {

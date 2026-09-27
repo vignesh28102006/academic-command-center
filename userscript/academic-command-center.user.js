@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Academic Command Center - WhatsApp Web Collector
 // @namespace    http://academic-command-center.local/
-// @version      3.0.0
-// @description  Automated 2-hour academic message collector with September 10 historical backfill, per-group cursors, and group discovery.
+// @version      3.2.0
+// @description  Small floating ACC Collector status pill at bottom-left of WhatsApp Web with explicit scan lifecycle UX, auto-hide, popover summary, and cursor safety.
 // @author       Academic Command Center
 // @match        https://web.whatsapp.com/*
 // @grant        GM_xmlhttpRequest
@@ -20,71 +20,57 @@
   // 1. CONFIGURATION
   // ===========================================================================
   const CONFIG = {
-    // URL of your local Academic Command Center backend
     backendUrl: "http://localhost:3000",
-
-    // Collector authentication secret matching server-side COLLECTOR_SECRET in .env.local
-    // NEVER put Gemini API key, Supabase keys, or Notion tokens here!
     collectorSecret: "change-me",
-
-    // Initial historical backfill start boundary (Asia/Kolkata timezone)
-    // Only used for initial backfill; future scans resume from persistent per-group cursor
     backfillStartDate: "2026-09-10T00:00:00+05:30",
 
-    // Recurring scan cycle interval (default: 2 hours; configurable for testing)
-    scanIntervalMs: 2 * 60 * 60 * 1000,
-
-    // Automatically navigate between discovered WhatsApp group chats during scan cycle
-    // Production default: true. Set to false to disable automatic switching.
-    autoNavigateGroups: true,
-
-    // Automatically monitor all WhatsApp group chats (no manual allowlist required)
-    monitorAllGroups: true,
-
-    // Reference group list (also used if monitorAllGroups is set to false)
-    monitoredGroups: [
-      "CSE-C Announcements",
-      "23cse351 FoDS G1",
-      "23CSE351",
-      "FoDS",
-      "NLP 2026 batch",
-      "NLP 2026",
-      "CSE-C Official 2024",
+    // ONLY these 6 groups are monitored. Do not change this list.
+    allowedGroups: [
       "Machine Learning CSE-C",
-      "Computer Networks CSE-C"
+      "Computer Networks CSE-C",
+      "TOC 23CSE303 - CSE-C",
+      "NLP 2026 batch",
+      "CSE-C Announcements",
+      "23CSE351 FoDS G1"
     ],
 
-    // Safety limits for virtual scrolling and scan execution
     maxScrollAttempts: 30,
-    maxScanDurationMs: 5 * 60 * 1000, // 5 minutes max per scan cycle
     cacheSize: 500,
+    scanCompleteAutoHideMs: 7000, // 7 seconds (within 5-10s requirement)
     debug: true
   };
 
   // ===========================================================================
-  // 2. STATE & DEDUPLICATION CACHE
+  // 2. STATE MACHINE & CACHE
+  // States: IDLE, SCANNING, COMPLETE, ERROR, PERSONAL_IGNORED, GROUP_NOT_MONITORED, WHATSAPP_UNAVAILABLE
   // ===========================================================================
   const processedMessageIds = new Set();
   const processedMessageHashes = new Set();
+
   let currentActiveChat = null;
   let currentIsGroup = false;
 
-  // Scan lifecycle state
-  let isScanRunning = false;
-  let collectorState = "IDLE"; // IDLE, DISCOVERING_GROUPS, BACKFILLING, MONITORING, SCANNING, PERSONAL_CHAT_IGNORED, ERROR, WHATSAPP_UNAVAILABLE
-  let lastScanStartedAt = null;
-  let lastScanCompletedAt = null;
-  let currentScanId = null;
-
-  let stats = {
-    received: 0,
-    filteredChatter: 0,
-    sentToBackend: 0,
+  const currentScanStats = {
+    scanId: 0,
+    groupName: null,
+    scanStatus: "IDLE", // IDLE, SCANNING, COMPLETE, ERROR, PERSONAL_IGNORED, GROUP_NOT_MONITORED, WHATSAPP_UNAVAILABLE
+    scanStartedAt: null,
+    scanCompletedAt: null,
+    messagesScanned: 0,
+    academicMessages: 0, // Rocket counter: messages processed during THIS scan only
+    messagesIgnored: 0,
+    duplicates: 0,
+    eventsCreated: 0,
+    eventsUpdated: 0,
     errors: 0,
-    groupsDiscovered: 0,
-    groupsCompleted: 0,
-    groupsFailed: 0
+    failedMessageCount: 0,
+    errorReason: null,
+    lastProcessedTimestamp: null
   };
+
+  let scanCompleteTimer = null;
+  let isMonitoringActive = false; // true when auto-hide timer elapses after COMPLETE
+  let isPopoverOpen = false;
 
   function log(...args) {
     if (CONFIG.debug) {
@@ -131,11 +117,9 @@
   }
 
   // ===========================================================================
-  // 3. WHATSAPP WEB DOM SELECTOR HELPERS
-  // Centralized selectors with defensive null checks for DOM resilience.
+  // 3. WHATSAPP WEB DOM SELECTORS
   // ===========================================================================
   const SELECTORS = {
-    // Current open chat title in the conversation header
     chatTitle: [
       "#main header span[dir='auto'][title]",
       "#main header span[dir='auto']",
@@ -143,7 +127,6 @@
       "header span[title]",
       "header span._ao3e"
     ],
-    // Secondary subtitle line in the conversation header (participant info or status)
     chatSubtitle: [
       "#main header span[title].x1f66pv5",
       "#main header span._ao3e[title]",
@@ -153,14 +136,12 @@
       "#main header div.x10l6tqk span",
       "header div[role='button'] span[dir='auto']"
     ],
-    // Header click target / button (e.g., "Group info" vs "Contact info")
     headerInfoButton: [
       "#main header [role='button'][aria-label*='info' i]",
       "#main header [role='button'][title*='info' i]",
       "#main header div[role='button']",
       "#main header [data-testid='conversation-info-header']"
     ],
-    // Group icons / avatars
     groupIcons: [
       "#main header [data-icon*='group']",
       "#main header [data-testid*='group']",
@@ -170,45 +151,32 @@
       "#main header [aria-label*='group' i]",
       "#main header [aria-label*='community' i]"
     ],
-    // Personal user icons / avatars
     userIcons: [
       "#main header [data-icon='default-user']",
       "#main header [data-testid='default-user']",
       "#main header [aria-label*='profile' i]"
     ],
-    // Message container elements in the active chat view
     messageContainers: [
       "div[data-id]",
       "div.message-in",
       "div.message-out",
       "div[role='row']"
     ],
-    // Author header line above incoming messages in groups
     authorHeaders: [
       "#main span[data-testid='author']",
       "#main span[dir='auto']._ahk_",
       "#main span._ahk-",
       "#main span[dir='auto']._al4b"
     ],
-    // Text inside a message bubble
     messageText: [
       "span.selectable-text",
       "span._ao3e",
       "div.copyable-text",
       "span[dir='ltr']"
     ],
-    // Copyable text wrapper containing pre-plain-text attribute
     copyableText: [
       "div.copyable-text[data-pre-plain-text]",
       "[data-pre-plain-text]"
-    ],
-    // Sidebar chat elements for discovery
-    sidebarChatRows: [
-      "#pane-side div[role='listitem']",
-      "#pane-side div[role='row']",
-      "#pane-side div[data-testid='cell-frame-container']",
-      "#pane-side div._ak72",
-      "#pane-side div.x10l6tqk"
     ]
   };
 
@@ -238,15 +206,11 @@
     return null;
   }
 
-  // ===========================================================================
-  // 4. GROUP CHAT DETECTION HELPER (GROUP vs PERSONAL 1-to-1)
-  // Multi-strategy detection using semantic DOM signals without scraping history.
-  // ===========================================================================
   function isGroupChat() {
     const mainEl = document.getElementById("main");
     if (!mainEl) return false;
 
-    // Strategy 1: Inspect Header Action Label / Title (most direct semantic signal)
+    // Header info button
     for (const sel of SELECTORS.headerInfoButton) {
       try {
         const btn = mainEl.querySelector(sel);
@@ -262,30 +226,25 @@
       } catch (_) {}
     }
 
-    // Strategy 2: Header Icons & Avatars
+    // Group icons vs user icons
     for (const sel of SELECTORS.groupIcons) {
       try {
-        if (mainEl.querySelector(sel)) {
-          return true;
-        }
+        if (mainEl.querySelector(sel)) return true;
       } catch (_) {}
     }
     for (const sel of SELECTORS.userIcons) {
       try {
-        if (mainEl.querySelector(sel)) {
-          return false;
-        }
+        if (mainEl.querySelector(sel)) return false;
       } catch (_) {}
     }
 
-    // Strategy 3: Header Subtitle / Participant Information
+    // Subtitle indicators
     for (const sel of SELECTORS.chatSubtitle) {
       try {
         const subEl = mainEl.querySelector(sel);
         if (subEl) {
           const subText = (subEl.getAttribute("title") || subEl.textContent || "").toLowerCase().trim();
           if (subText) {
-            // Explicit negative check: Personal status indicators
             if (
               subText === "online" ||
               subText.startsWith("last seen") ||
@@ -294,21 +253,15 @@
             ) {
               return false;
             }
-
-            // Explicit positive check: Group indicators
             if (
               subText.includes("participants") ||
               subText.includes("members") ||
               subText.includes("group info") ||
-              subText.includes("tap here for group info") ||
-              subText.includes("click here for group info") ||
               subText.includes("community") ||
               subText.includes("announcement")
             ) {
               return true;
             }
-
-            // Participant list format: "Alice, Bob, You..." or contains multiple commas
             if (subText.includes(",") && (subText.includes("you") || subText.split(",").length >= 2)) {
               return true;
             }
@@ -317,7 +270,7 @@
       } catch (_) {}
     }
 
-    // Strategy 4: Message Bubble Author Headers
+    // Author headers in bubbles
     for (const sel of SELECTORS.authorHeaders) {
       try {
         const authorEl = mainEl.querySelector(sel);
@@ -327,30 +280,28 @@
       } catch (_) {}
     }
 
-    // Strategy 5: Inspect active sidebar row in #pane-side if available
-    try {
-      const activeRow = document.querySelector("#pane-side [aria-selected='true']");
-      if (activeRow) {
-        for (const sel of SELECTORS.groupIcons) {
-          if (activeRow.querySelector(sel)) return true;
-        }
-      }
-    } catch (_) {}
-
     return false;
+  }
+
+  function normalizeGroupName(name) {
+    if (!name || typeof name !== "string") return "";
+    return name
+      .normalize("NFKC")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase();
   }
 
   function isGroupMonitored(chatName) {
     if (!currentIsGroup) return false;
-    if (CONFIG.monitorAllGroups) return true;
     if (!chatName) return false;
-    const lower = chatName.toLowerCase();
-    const list = CONFIG.monitoredGroups || [];
-    return list.some(g => lower.includes(g.toLowerCase()));
+    const norm = normalizeGroupName(chatName);
+    const list = CONFIG.allowedGroups || [];
+    return list.some(g => normalizeGroupName(g) === norm);
   }
 
   // ===========================================================================
-  // 5. TIMESTAMP PARSER & BOUNDARY CHECKS
+  // 4. TIMESTAMP PARSER & BOUNDARY CHECKS
   // ===========================================================================
   function parseWhatsAppMessageTimestamp(rawText) {
     if (!rawText) return new Date().toISOString();
@@ -446,8 +397,28 @@
     }
   }
 
+  function formatDisplayDate(isoStr) {
+    if (!isoStr) return "Never";
+    try {
+      const d = new Date(isoStr);
+      if (isNaN(d.getTime())) return isoStr;
+      const day = d.getDate();
+      const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+      const month = months[d.getMonth()];
+      const year = d.getFullYear();
+      let hours = d.getHours();
+      const minutes = d.getMinutes();
+      const meridian = hours >= 12 ? "PM" : "AM";
+      hours = hours % 12 || 12;
+      const padMin = minutes < 10 ? `0${minutes}` : minutes;
+      return `${day} ${month} ${year} ${hours}:${padMin} ${meridian}`;
+    } catch (_) {
+      return isoStr;
+    }
+  }
+
   // ===========================================================================
-  // 6. MESSAGE DETAILS EXTRACTION
+  // 5. MESSAGE EXTRACTION & RELEVANCE FILTER
   // ===========================================================================
   function extractMessageDetails(msgNode) {
     try {
@@ -499,18 +470,35 @@
     }
   }
 
-  // ===========================================================================
-  // 7. LOCAL MESSAGE FILTER (CONSERVATIVE PRE-FILTER)
-  // ===========================================================================
-  const ACADEMIC_KEYWORDS = [
-    "assignment", "submit", "submission", "deadline", "due", "exam", "test",
-    "slip test", "quiz", "lab", "project", "presentation", "viva", "course",
-    "certificate", "certification", "class", "internal", "assessment", "marks",
-    "grade", "attendance", "postponed", "rescheduled", "cancelled", "canceled",
-    "extended", "link", "tomorrow", "today", "monday", "tuesday", "wednesday",
-    "thursday", "friday", "saturday", "sunday", "portal", "classroom", "gcr",
-    "moodle", "drive.google.com", "forms.gle", "docs.google.com", "hour",
-    "period", "session", "hall ticket", "syllabus", "fods", "data science"
+  const STRICT_ACADEMIC_KEYWORDS = [
+    "assignment", "submit", "submission", "deadline", "due", "exam", "examination",
+    "internal", "end semester", "end-sem", "slip test", "quiz", "lab", "practical",
+    "viva", "project", "presentation", "seminar", "course", "certification",
+    "assessment", "test", "scheduled", "postponed", "cancelled", "canceled",
+    "rescheduled", "extended", "submission link", "classroom.google.com",
+    "forms.gle", "moodle", "drive.google.com", "hall ticket", "syllabus",
+    "fods", "data science"
+  ];
+
+  const PROMOTIONAL_INDICATORS = [
+    /\b(0%\s*(?:interest|emi)|zero\s*%?\s*interest)\b/i,
+    /\b(?:emi|down\s*payment|monthly\s*installments?)\b/i,
+    /\b(?:plots?\s+for\s+sale|villas?\s+for\s+sale|flats?\s+for\s+sale|apartments?\s+for\s+sale)\b/i,
+    /\b(?:real\s*estate|gated\s*community|open\s*plots?|acres?\s+of\s+land)\b/i,
+    /\b(?:your\s+land\b.*?\byour\s+legacy\b|commercial\s+space\s+for\s+sale)\b/i,
+    /\b(?:exclusive\s*offer|limited\s*period\s*offer|special\s*discount|discount\s*\d+%)\b/i,
+    /\b(?:enquire\s*(?:now|today)|contact\s*us|call\s*us\s+at|visit\s*our\s*(?:site|store|office))\b/i,
+    /\b(?:book\s*your\s*(?:site\s*visit|flat|plot|slot))\b/i,
+    /\b(?:cashback|coupon\s*code|invest\s*now|guaranteed\s*returns?)\b/i
+  ];
+
+  const ATTENDANCE_ONLY_PATTERNS = [
+    /\battendance\s+(?:will\s+be\s+taken|percentage|shortage|today|update|list|shortage\s+list|rules?|criteria)\b/i,
+    /\bstudents?\s+with\s+low\s+attendance\b/i,
+    /\b(?:mark|record)\s+your\s+attendance\b/i,
+    /\btoday'?s?\s+attendance\s+is\s+\d+%\b/i,
+    /\battendance\s+shortage\b/i,
+    /\battendance\s+is\s+mandatory\b/i
   ];
 
   const CLEAR_CHATTER_EXACT = new Set([
@@ -524,35 +512,32 @@
     const clean = text.trim();
     const lower = clean.toLowerCase();
 
-    if (CLEAR_CHATTER_EXACT.has(lower)) {
-      return false;
-    }
+    if (CLEAR_CHATTER_EXACT.has(lower)) return false;
 
     const emojiOrSymbolOnly = /^[\p{Emoji}\s\d\W]+$/u.test(clean) && !/[a-zA-Z]{3,}/.test(clean);
-    if (emojiOrSymbolOnly && !clean.includes("http")) {
-      return false;
+    if (emojiOrSymbolOnly) return false;
+
+    const isPromo = PROMOTIONAL_INDICATORS.some(pat => pat.test(clean));
+    if (isPromo) return false;
+
+    const hasAcademicSignal = STRICT_ACADEMIC_KEYWORDS.some(kw => lower.includes(kw));
+
+    const isAttendance = ATTENDANCE_ONLY_PATTERNS.some(pat => pat.test(clean));
+    if (isAttendance) {
+      const hasRealAcademicEvent = /\b(assignment\d*|submit|deadline|due|exam|slip\s*test|quiz|lab|project|presentation|test)\b/i.test(clean);
+      if (!hasRealAcademicEvent) return false;
     }
 
     const hasUrl = /https?:\/\/[^\s]+/i.test(clean);
-    const hasAcademicKeyword = ACADEMIC_KEYWORDS.some(kw => lower.includes(kw));
+    if (hasUrl && !hasAcademicSignal) return false;
 
-    if (clean.length < 10 && !hasUrl && !hasAcademicKeyword) {
-      return false;
-    }
+    const hasCourseCode = /\b[0-9]{2}[A-Z]{3}[0-9]{3}\b/i.test(clean) || /\b[A-Z]{2,4}[0-9]{3}\b/i.test(clean);
 
-    if (hasAcademicKeyword || hasUrl) {
-      return true;
-    }
-
-    if (/\b[0-9]{2}[A-Z]{3}[0-9]{3}\b/i.test(clean) || /\b[A-Z]{2,4}[0-9]{3}\b/i.test(clean)) {
-      return true;
-    }
-
-    return clean.length >= 25;
+    return hasAcademicSignal || hasCourseCode;
   }
 
   // ===========================================================================
-  // 8. BACKEND API CLIENT (GM_xmlhttpRequest)
+  // 6. BACKEND API CLIENT
   // ===========================================================================
   function apiRequest(method, endpoint, data = null) {
     return new Promise((resolve, reject) => {
@@ -565,7 +550,7 @@
           "Authorization": `Bearer ${CONFIG.collectorSecret}`
         },
         data: data ? JSON.stringify(data) : undefined,
-        timeout: 15000,
+        timeout: 20000,
         onload: function (res) {
           try {
             const json = JSON.parse(res.responseText);
@@ -582,8 +567,14 @@
             }
           }
         },
-        onerror: err => reject(err),
-        ontimeout: () => reject(new Error("Request timed out"))
+        onerror: err => {
+          setCollectorState("WHATSAPP_UNAVAILABLE");
+          reject(err);
+        },
+        ontimeout: () => {
+          setCollectorState("WHATSAPP_UNAVAILABLE");
+          reject(new Error("Request timed out"));
+        }
       });
     });
   }
@@ -620,73 +611,12 @@
   }
 
   // ===========================================================================
-  // 9. GROUP DISCOVERY
-  // Scans #pane-side to identify all available WhatsApp GROUP chats.
-  // ===========================================================================
-  function discoverSidebarGroups() {
-    const pane = document.getElementById("pane-side");
-    if (!pane) return [];
-
-    const discovered = [];
-    const seenTitles = new Set();
-
-    // Query chat rows in the sidebar
-    for (const sel of SELECTORS.sidebarChatRows) {
-      const rows = pane.querySelectorAll(sel);
-      if (rows && rows.length > 0) {
-        rows.forEach(row => {
-          try {
-            // Find chat name
-            const titleEl = row.querySelector("span[title]") || row.querySelector("span[dir='auto']");
-            const title = (titleEl?.getAttribute("title") || titleEl?.textContent || "").trim();
-            if (!title || seenTitles.has(title)) return;
-
-            // Semantic check for group in the sidebar row:
-            // 1. Group / community icons
-            let isGroup = false;
-            for (const iconSel of SELECTORS.groupIcons) {
-              if (row.querySelector(iconSel)) {
-                isGroup = true;
-                break;
-              }
-            }
-
-            // 2. Look for member delimiter in preview e.g. "Alice: hello"
-            const previewEl = row.querySelector("span[dir='ltr']") || row.querySelector("._ak8j");
-            const previewText = previewEl?.textContent || "";
-            if (!isGroup && previewText.includes(": ")) {
-              isGroup = true;
-            }
-
-            // 3. Known monitored list inclusion
-            if (!isGroup && CONFIG.monitoredGroups.some(g => title.toLowerCase().includes(g.toLowerCase()))) {
-              isGroup = true;
-            }
-
-            if (isGroup) {
-              seenTitles.add(title);
-              discovered.push({
-                name: title,
-                element: row
-              });
-            }
-          } catch (_) {}
-        });
-      }
-    }
-
-    return discovered;
-  }
-
-  // ===========================================================================
-  // 10. VIRTUAL SCROLLING & HISTORICAL BACKFILL ENGINE
-  // Scrolls upward until messages reach September 10, 2026.
+  // 7. VIRTUAL SCROLLING ENGINE (September 10 Backfill)
   // ===========================================================================
   function findMessageScrollContainer() {
     const mainEl = document.getElementById("main");
     if (!mainEl) return null;
 
-    // Search for the scrollable container inside #main
     const candidates = mainEl.querySelectorAll("div");
     for (const c of candidates) {
       if (c.scrollHeight > c.clientHeight && c.clientHeight > 200) {
@@ -718,7 +648,6 @@
       }
     }
 
-    // Sort chronologically
     return nodes.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   }
 
@@ -728,131 +657,164 @@
 
     log("Virtual scrolling upward for September 10 boundary...");
     let attempts = 0;
-    let lastEarliestTimestamp = null;
-    let reachedBoundary = false;
 
     while (attempts < CONFIG.maxScrollAttempts) {
       attempts++;
       const currentMessages = getRenderedMessages();
       if (currentMessages.length > 0) {
         const earliest = currentMessages[0];
-        lastEarliestTimestamp = earliest.timestamp;
-
-        // Check if we reached or crossed September 10
         if (!isEligibleDate(earliest.timestamp)) {
-          log("Reached September 10 backfill boundary! Earliest message is:", earliest.timestamp);
-          reachedBoundary = true;
+          log("Reached September 10 backfill boundary! Earliest message:", earliest.timestamp);
           break;
         }
       }
 
-      // Scroll upward
       const prevScrollHeight = container.scrollHeight;
       container.scrollTop = 0;
-
-      // Small delay for WhatsApp Web to load older messages into DOM
       await delay(700);
 
-      // If scrollHeight didn't change and we're at top, we reached chat start
       if (container.scrollHeight === prevScrollHeight && attempts > 3) {
-        log("No more older messages available in WhatsApp Web chat history.");
-        reachedBoundary = true;
+        log("Reached top of available chat history in WhatsApp Web.");
         break;
       }
     }
-
-    return {
-      reachedBoundary,
-      earliestTimestamp: lastEarliestTimestamp
-    };
   }
 
   // ===========================================================================
-  // 11. PER-GROUP SCAN EXECUTION
+  // 8. STATE MACHINE CONTROLLER & BADGE UPDATE
   // ===========================================================================
-  async function scanSingleGroup(groupItem) {
-    const groupName = groupItem.name;
-    log(`Starting scan for group: "${groupName}"`);
-
-    // 1. Click sidebar chat to open conversation
-    try {
-      groupItem.element.click();
-    } catch (_) {
-      const clickTarget = groupItem.element.querySelector("div[role='gridcell']") || groupItem.element;
-      clickTarget.click();
+  function setCollectorState(newState, groupName = null, extra = {}) {
+    if (scanCompleteTimer) {
+      clearTimeout(scanCompleteTimer);
+      scanCompleteTimer = null;
     }
 
-    await delay(1200);
+    currentScanStats.scanStatus = newState;
+    if (groupName !== null) currentScanStats.groupName = groupName;
+    if (extra.errorReason !== undefined) currentScanStats.errorReason = extra.errorReason;
+    if (extra.failedMessageCount !== undefined) currentScanStats.failedMessageCount = extra.failedMessageCount;
+    if (extra.lastProcessedTimestamp !== undefined) currentScanStats.lastProcessedTimestamp = extra.lastProcessedTimestamp;
 
-    // 2. Strict Privacy Boundary: Verify this is genuinely a GROUP
-    const isGroup = isGroupChat();
-    if (!isGroup) {
-      log(`Privacy guard: "${groupName}" evaluated as personal chat. Skipping.`);
-      collectorState = "PERSONAL_CHAT_IGNORED";
-      updateStatusBadge();
-      return { status: "SKIPPED_PERSONAL" };
+    if (newState === "COMPLETE") {
+      isMonitoringActive = false;
+      // Keep Scan Complete visible for 7s before auto-hiding to monitoring pill
+      scanCompleteTimer = setTimeout(() => {
+        if (currentScanStats.scanStatus === "COMPLETE" && !isPopoverOpen) {
+          isMonitoringActive = true;
+          updateStatusBadge();
+        }
+      }, CONFIG.scanCompleteAutoHideMs);
+    } else {
+      isMonitoringActive = false;
     }
 
-    // 3. Fetch persistent cursor from server
-    let groupState = await fetchGroupState(groupName);
-    const isBackfill = !groupState || !groupState.backfillComplete;
-
-    collectorState = isBackfill ? "BACKFILLING" : "SCANNING";
     updateStatusBadge();
+  }
+
+  // ===========================================================================
+  // 9. MANUAL PER-GROUP SCAN EXECUTION ENGINE
+  // ===========================================================================
+  async function runManualGroupScan(groupName, scanId) {
+    if (currentScanStats.scanId !== scanId) return;
+
+    log(`Beginning manual group scan for: "${groupName}" (Scan ID: ${scanId})`);
+
+    const norm = normalizeGroupName(groupName);
+    const isAllowed = CONFIG.allowedGroups.some(g => normalizeGroupName(g) === norm);
+    if (!isAllowed) {
+      setCollectorState("GROUP_NOT_MONITORED", groupName);
+      return;
+    }
+
+    if (!isGroupChat()) {
+      setCollectorState("PERSONAL_IGNORED", groupName);
+      return;
+    }
+
+    setCollectorState("SCANNING", groupName);
+    currentScanStats.scanStartedAt = new Date().toISOString();
+    currentScanStats.scanCompletedAt = null;
 
     await reportCollectorStatus({
       currentGroup: groupName,
       chatType: "GROUP",
-      collectionStatus: isBackfill ? "BACKFILLING" : "ACTIVE",
+      collectionStatus: "ACTIVE",
+      scanStatus: "SCANNING",
+      scanStartedAt: currentScanStats.scanStartedAt,
+      scanCompletedAt: null,
+      messagesScanned: 0,
+      academicMessages: 0,
+      messagesIgnored: 0,
+      duplicates: 0,
+      eventsCreated: 0,
+      eventsUpdated: 0,
+      errors: 0,
+      lastProcessedTimestamp: null,
       whatsappAvailable: true
     });
 
-    // 4. If backfill not complete, scroll upward to reach September 10
+    if (currentScanStats.scanId !== scanId) return;
+
+    // Fetch persistent group state from server
+    const groupState = await fetchGroupState(groupName);
+    if (currentScanStats.scanId !== scanId) return;
+
+    const isBackfill = !groupState || !groupState.backfillComplete;
     if (isBackfill) {
+      log(`Group "${groupName}" requires initial backfill. Scrolling to September 10...`);
       await scrollUpToBackfillBoundary();
+      if (currentScanStats.scanId !== scanId) return;
+    } else {
+      log(`Group "${groupName}" resuming from saved cursor:`, groupState.lastProcessedMessageTimestamp);
     }
 
-    // 5. Gather rendered messages in chronological order
     const renderedMessages = getRenderedMessages();
-    log(`Inspect ${renderedMessages.length} rendered messages in "${groupName}"`);
+    currentScanStats.messagesScanned = renderedMessages.length;
+    currentScanStats.lastProcessedTimestamp = groupState?.lastProcessedMessageTimestamp || null;
+    updateStatusBadge();
 
-    let processedCount = 0;
-    let ignoredCount = 0;
     let newestProcessedTimestamp = groupState?.lastProcessedMessageTimestamp || null;
     let newestProcessedId = groupState?.lastProcessedMessageId || null;
     let scanError = null;
 
     for (const msg of renderedMessages) {
-      // Rule 1: September 10 boundary check
+      if (currentScanStats.scanId !== scanId) {
+        log(`Scan ${scanId} aborted due to group switch.`);
+        return;
+      }
+
+      // September 10 boundary check
       if (!isEligibleDate(msg.timestamp)) {
-        ignoredCount++;
+        currentScanStats.messagesIgnored++;
+        updateStatusBadge();
         continue;
       }
 
-      // Rule 2: Incremental cursor check (skip already processed messages)
+      // Cursor check: skip already processed messages from previous scans
       if (groupState?.lastProcessedMessageTimestamp && !isNewerThanCursor(msg.timestamp, groupState.lastProcessedMessageTimestamp)) {
         continue;
       }
 
       // Deduplication check
       if (isDuplicate(msg.id, msg.text)) {
+        currentScanStats.duplicates++;
+        updateStatusBadge();
         continue;
       }
 
       markAsProcessed(msg.id, msg.text);
-      stats.received++;
 
-      // Filter non-academic chatter
+      // Local relevance filter
       if (!passesLocalFilter(msg.text)) {
-        stats.filteredChatter++;
-        ignoredCount++;
-        // We can safely advance cursor past chatter
+        currentScanStats.messagesIgnored++;
         newestProcessedTimestamp = msg.timestamp;
         newestProcessedId = msg.id || newestProcessedId;
+        currentScanStats.lastProcessedTimestamp = msg.timestamp;
+        updateStatusBadge();
         continue;
       }
 
-      // Send to backend
+      // Send to backend (Gemini -> Supabase -> Notion sync)
       try {
         const res = await sendAcademicMessage({
           message: msg.text,
@@ -862,233 +824,240 @@
           sourceMessageId: msg.id || undefined
         });
 
-        stats.sentToBackend++;
-        processedCount++;
-
-        // Only advance cursor upon successful processing
+        // Increment processed counter for THIS scan
+        currentScanStats.academicMessages++;
+        currentScanStats.lastProcessedTimestamp = msg.timestamp;
         newestProcessedTimestamp = msg.timestamp;
         newestProcessedId = msg.id || newestProcessedId;
+
+        const action = res?.data?.action;
+        if (action === "CREATED") {
+          currentScanStats.eventsCreated++;
+        } else if (action === "UPDATED") {
+          currentScanStats.eventsUpdated++;
+        } else if (action === "IGNORED_DUPLICATE") {
+          currentScanStats.duplicates++;
+        } else if (action === "NON_ACADEMIC") {
+          currentScanStats.messagesIgnored++;
+        }
+
+        updateStatusBadge();
+
+        await reportCollectorStatus({
+          currentGroup: groupName,
+          chatType: "GROUP",
+          collectionStatus: "ACTIVE",
+          scanStatus: "SCANNING",
+          scanStartedAt: currentScanStats.scanStartedAt,
+          scanCompletedAt: null,
+          messagesScanned: currentScanStats.messagesScanned,
+          academicMessages: currentScanStats.academicMessages,
+          messagesIgnored: currentScanStats.messagesIgnored,
+          duplicates: currentScanStats.duplicates,
+          eventsCreated: currentScanStats.eventsCreated,
+          eventsUpdated: currentScanStats.eventsUpdated,
+          errors: currentScanStats.errors,
+          lastProcessedTimestamp: currentScanStats.lastProcessedTimestamp,
+          whatsappAvailable: true
+        });
       } catch (err) {
-        log(`Failed sending message to backend for group "${groupName}":`, err.message);
-        stats.errors++;
-        scanError = err.message;
-        // Strict requirement: DO NOT advance cursor past failed message!
+        log(`Failed processing message in "${groupName}":`, err.message);
+        currentScanStats.errors++;
+        currentScanStats.failedMessageCount++;
+        currentScanStats.errorReason = err.message || "Failed processing message";
+        scanError = err;
+        // DO NOT advance cursor past failed message!
         break;
       }
     }
 
-    // 6. Update Group Cursor and Completion Status
-    const backfillCompleteNow = Boolean(
-      (groupState?.backfillComplete) ||
-      (isBackfill && !scanError)
-    );
+    if (currentScanStats.scanId !== scanId) return;
 
+    if (scanError) {
+      setCollectorState("ERROR", groupName, {
+        errorReason: currentScanStats.errorReason,
+        failedMessageCount: currentScanStats.failedMessageCount,
+        lastProcessedTimestamp: newestProcessedTimestamp
+      });
+
+      // Update cursor with error, not past failed message
+      await updateGroupCursor(groupName, {
+        groupName,
+        lastProcessedMessageTimestamp: newestProcessedTimestamp,
+        lastProcessedMessageId: newestProcessedId,
+        backfillComplete: groupState?.backfillComplete || false,
+        status: "ERROR",
+        lastError: currentScanStats.errorReason,
+        messagesScannedIncrement: currentScanStats.messagesScanned,
+        messagesProcessedIncrement: currentScanStats.academicMessages,
+        messagesIgnoredIncrement: currentScanStats.messagesIgnored
+      });
+
+      await reportCollectorStatus({
+        currentGroup: groupName,
+        chatType: "GROUP",
+        collectionStatus: "ACTIVE",
+        scanStatus: "ERROR",
+        scanStartedAt: currentScanStats.scanStartedAt,
+        scanCompletedAt: null,
+        messagesScanned: currentScanStats.messagesScanned,
+        academicMessages: currentScanStats.academicMessages,
+        messagesIgnored: currentScanStats.messagesIgnored,
+        duplicates: currentScanStats.duplicates,
+        eventsCreated: currentScanStats.eventsCreated,
+        eventsUpdated: currentScanStats.eventsUpdated,
+        errors: currentScanStats.errors,
+        lastProcessedTimestamp: currentScanStats.lastProcessedTimestamp,
+        lastError: currentScanStats.errorReason,
+        whatsappAvailable: true
+      });
+      return;
+    }
+
+    // Safely update cursor AFTER all processing finishes
     await updateGroupCursor(groupName, {
       groupName,
       lastProcessedMessageTimestamp: newestProcessedTimestamp,
       lastProcessedMessageId: newestProcessedId,
-      backfillComplete: backfillCompleteNow,
-      status: scanError ? "ERROR" : "MONITORING",
-      lastError: scanError || null,
-      messagesScannedIncrement: renderedMessages.length,
-      messagesProcessedIncrement: processedCount,
-      messagesIgnoredIncrement: ignoredCount
+      backfillComplete: true,
+      status: "MONITORING",
+      lastError: null,
+      messagesScannedIncrement: currentScanStats.messagesScanned,
+      messagesProcessedIncrement: currentScanStats.academicMessages,
+      messagesIgnoredIncrement: currentScanStats.messagesIgnored
     });
 
-    log(`Completed scan for "${groupName}". Processed: ${processedCount}, Ignored: ${ignoredCount}, BackfillComplete: ${backfillCompleteNow}`);
-    return {
-      status: scanError ? "FAILED" : "COMPLETED",
-      error: scanError
-    };
+    if (currentScanStats.scanId !== scanId) return;
+
+    // Transition to COMPLETE state
+    currentScanStats.scanCompletedAt = new Date().toISOString();
+    setCollectorState("COMPLETE", groupName);
+
+    log(`=== SCAN COMPLETE FOR "${groupName}" ===`);
+
+    await reportCollectorStatus({
+      currentGroup: groupName,
+      chatType: "GROUP",
+      collectionStatus: "ACTIVE",
+      scanStatus: "COMPLETE",
+      scanStartedAt: currentScanStats.scanStartedAt,
+      scanCompletedAt: currentScanStats.scanCompletedAt,
+      messagesScanned: currentScanStats.messagesScanned,
+      academicMessages: currentScanStats.academicMessages,
+      messagesIgnored: currentScanStats.messagesIgnored,
+      duplicates: currentScanStats.duplicates,
+      eventsCreated: currentScanStats.eventsCreated,
+      eventsUpdated: currentScanStats.eventsUpdated,
+      errors: 0,
+      lastProcessedTimestamp: currentScanStats.lastProcessedTimestamp,
+      lastError: null,
+      whatsappAvailable: true
+    });
   }
 
   // ===========================================================================
-  // 12. TWO-HOUR SCAN CYCLE SCHEDULER & SCAN LOCK
-  // ===========================================================================
-  async function runFullScanCycle() {
-    // Scan Lock: Prevent concurrent scans
-    if (isScanRunning) {
-      log("Scan already in progress. Skipping concurrent cycle trigger.");
-      return;
-    }
-
-    isScanRunning = true;
-    lastScanStartedAt = new Date().toISOString();
-    collectorState = "DISCOVERING_GROUPS";
-    updateStatusBadge();
-
-    log("=== STARTING ACADEMIC COMMAND CENTER 2-HOUR SCAN CYCLE ===");
-
-    // Verify WhatsApp Web availability
-    const pane = document.getElementById("pane-side");
-    if (!pane) {
-      log("WhatsApp Web unavailable (pane-side not found). Reporting unavailable.");
-      collectorState = "WHATSAPP_UNAVAILABLE";
-      updateStatusBadge();
-      await reportCollectorStatus({ whatsappAvailable: false });
-      isScanRunning = false;
-      return;
-    }
-
-    // Start scan record in backend
-    let scanRecordId = null;
-    try {
-      const scanRes = await apiRequest("POST", "/api/collector/scans", {
-        startedAt: lastScanStartedAt,
-        status: "IN_PROGRESS"
-      });
-      scanRecordId = scanRes.data?.scan?.id || null;
-      currentScanId = scanRecordId;
-    } catch (_) {}
-
-    try {
-      // 1. Discover all WhatsApp group chats
-      const groups = discoverSidebarGroups();
-      stats.groupsDiscovered = groups.length;
-      log(`Discovered ${groups.length} eligible WhatsApp group chats.`);
-
-      let completedCount = 0;
-      let failedCount = 0;
-
-      // 2. Sequential group scan
-      if (CONFIG.autoNavigateGroups && groups.length > 0) {
-        for (const grp of groups) {
-          try {
-            const res = await scanSingleGroup(grp);
-            if (res.status === "COMPLETED") {
-              completedCount++;
-            } else if (res.status === "FAILED") {
-              failedCount++;
-            }
-          } catch (grpErr) {
-            log(`Error scanning group "${grp.name}":`, grpErr);
-            failedCount++;
-            await updateGroupCursor(grp.name, {
-              status: "ERROR",
-              lastError: grpErr.message
-            });
-          }
-          await delay(1000);
-        }
-      } else {
-        // In manual / current-chat mode: scan active group
-        const activeName = getActiveChatName();
-        if (activeName && isGroupChat()) {
-          await scanSingleGroup({ name: activeName, element: document });
-          completedCount++;
-        }
-      }
-
-      stats.groupsCompleted += completedCount;
-      stats.groupsFailed += failedCount;
-      lastScanCompletedAt = new Date().toISOString();
-      collectorState = "IDLE";
-      updateStatusBadge();
-
-      // Finish scan record in backend
-      if (scanRecordId) {
-        await apiRequest("POST", "/api/collector/scans", {
-          id: scanRecordId,
-          completedAt: lastScanCompletedAt,
-          status: failedCount > 0 && completedCount === 0 ? "FAILED" : "COMPLETED",
-          groupsDiscovered: groups.length,
-          groupsCompleted: completedCount,
-          groupsFailed: failedCount
-        }).catch(() => {});
-      }
-
-      await reportCollectorStatus({
-        collectionStatus: "ACTIVE",
-        whatsappAvailable: true
-      });
-
-      log("=== 2-HOUR SCAN CYCLE COMPLETED SUCCESSFULLY ===");
-    } catch (err) {
-      log("Scan cycle encountered unexpected error:", err);
-      collectorState = "ERROR";
-      updateStatusBadge();
-      if (scanRecordId) {
-        await apiRequest("POST", "/api/collector/scans", {
-          id: scanRecordId,
-          completedAt: new Date().toISOString(),
-          status: "FAILED",
-          error: err.message
-        }).catch(() => {});
-      }
-    } finally {
-      isScanRunning = false;
-      collectorState = "IDLE";
-      updateStatusBadge();
-    }
-  }
-
-  // ===========================================================================
-  // 13. MUTATION OBSERVER & LIVE CHAT SWITCHING
-  // Observes new incoming messages between scan cycles
+  // 10. CHAT SWITCHING & MUTATION OBSERVER
   // ===========================================================================
   let observer = null;
 
-  function markExistingMessagesAsSeen() {
-    const mainEl = document.getElementById("main");
-    if (!mainEl) return;
-
-    for (const sel of SELECTORS.messageContainers) {
-      const existing = mainEl.querySelectorAll(sel);
-      existing.forEach(node => {
-        const details = extractMessageDetails(node);
-        if (details) {
-          markAsProcessed(details.id, details.text);
-        }
-      });
-    }
-  }
-
   function handleChatSwitch() {
+    const pane = document.getElementById("pane-side");
+    if (!pane) {
+      if (currentScanStats.scanStatus !== "WHATSAPP_UNAVAILABLE") {
+        setCollectorState("WHATSAPP_UNAVAILABLE");
+      }
+      return;
+    }
+
     const activeChat = getActiveChatName();
     if (!activeChat) {
       if (currentActiveChat !== null) {
         currentActiveChat = null;
         currentIsGroup = false;
-        updateStatusBadge();
+        currentScanStats.scanId++;
+        setCollectorState("IDLE");
+        reportCollectorStatus({
+          currentGroup: null,
+          chatType: null,
+          collectionStatus: "PAUSED",
+          scanStatus: "IDLE",
+          whatsappAvailable: true
+        });
       }
       return;
     }
 
     const isGroup = isGroupChat();
+    const chatChanged = activeChat !== currentActiveChat || isGroup !== currentIsGroup;
 
-    if (activeChat !== currentActiveChat || isGroup !== currentIsGroup) {
+    if (chatChanged) {
       currentActiveChat = activeChat;
       currentIsGroup = isGroup;
 
-      log("Chat switched:", activeChat, "Type:", isGroup ? "GROUP" : "PERSONAL");
-      markExistingMessagesAsSeen();
-      updateStatusBadge();
+      log("Chat switched to:", activeChat, "Type:", isGroup ? "GROUP" : "PERSONAL");
 
-      const monitored = isGroup && isGroupMonitored(activeChat);
-      reportCollectorStatus({
-        currentGroup: activeChat,
-        chatType: isGroup ? "GROUP" : "PERSONAL",
-        collectionStatus: monitored ? "ACTIVE" : "IGNORED",
-        whatsappAvailable: true
-      });
+      const norm = normalizeGroupName(activeChat);
+      const isAllowed = isGroup && CONFIG.allowedGroups.some(g => normalizeGroupName(g) === norm);
+
+      // Increment scanId to cancel any active scan from previous chat
+      currentScanStats.scanId++;
+      const thisScanId = currentScanStats.scanId;
+
+      if (!isGroup) {
+        setCollectorState("PERSONAL_IGNORED", activeChat);
+        reportCollectorStatus({
+          currentGroup: activeChat,
+          chatType: "PERSONAL",
+          collectionStatus: "IGNORED",
+          scanStatus: "PERSONAL_IGNORED",
+          whatsappAvailable: true
+        });
+        return;
+      }
+
+      if (!isAllowed) {
+        setCollectorState("GROUP_NOT_MONITORED", activeChat);
+        reportCollectorStatus({
+          currentGroup: activeChat,
+          chatType: "GROUP",
+          collectionStatus: "IGNORED",
+          scanStatus: "GROUP_NOT_MONITORED",
+          whatsappAvailable: true
+        });
+        return;
+      }
+
+      // Allowed group opened! Reset state machine for this group and begin scan
+      currentScanStats.groupName = activeChat;
+      currentScanStats.scanStartedAt = new Date().toISOString();
+      currentScanStats.scanCompletedAt = null;
+      currentScanStats.messagesScanned = 0;
+      currentScanStats.academicMessages = 0;
+      currentScanStats.messagesIgnored = 0;
+      currentScanStats.duplicates = 0;
+      currentScanStats.eventsCreated = 0;
+      currentScanStats.eventsUpdated = 0;
+      currentScanStats.errors = 0;
+      currentScanStats.failedMessageCount = 0;
+      currentScanStats.errorReason = null;
+      currentScanStats.lastProcessedTimestamp = null;
+
+      setCollectorState("SCANNING", activeChat);
+      runManualGroupScan(activeChat, thisScanId);
     }
   }
 
   function startObserver() {
     if (observer) observer.disconnect();
 
-    markExistingMessagesAsSeen();
-
     observer = new MutationObserver(mutations => {
       handleChatSwitch();
 
-      // When a scan is running, let the scan loop process messages sequentially
-      if (isScanRunning) return;
+      // If actively scanning, sequential loop handles messages
+      if (currentScanStats.scanStatus === "SCANNING") return;
 
-      // Strict privacy boundary: Only process monitored GROUP conversations
-      if (!currentIsGroup || !isGroupMonitored(currentActiveChat)) {
-        return;
-      }
+      // Only handle live incoming messages for allowed groups
+      if (!currentIsGroup || !isGroupMonitored(currentActiveChat)) return;
 
       for (const mutation of mutations) {
         if (mutation.type === "childList") {
@@ -1105,10 +1074,12 @@
                 if (isDuplicate(details.id, details.text)) continue;
 
                 markAsProcessed(details.id, details.text);
-                stats.received++;
+                currentScanStats.messagesScanned++;
 
                 if (!passesLocalFilter(details.text)) {
-                  stats.filteredChatter++;
+                  currentScanStats.messagesIgnored++;
+                  currentScanStats.lastProcessedTimestamp = details.timestamp;
+                  updateStatusBadge();
                   continue;
                 }
 
@@ -1118,12 +1089,28 @@
                   sourceSender: details.sender,
                   messageTimestamp: details.timestamp,
                   sourceMessageId: details.id || undefined
-                }).then(() => {
-                  stats.sentToBackend++;
+                }).then(res => {
+                  currentScanStats.academicMessages++;
+                  currentScanStats.lastProcessedTimestamp = details.timestamp;
+                  if (res?.data?.action === "CREATED") currentScanStats.eventsCreated++;
+                  else if (res?.data?.action === "UPDATED") currentScanStats.eventsUpdated++;
                   updateStatusBadge();
-                }).catch(() => {
-                  stats.errors++;
-                  updateStatusBadge();
+
+                  updateGroupCursor(currentActiveChat, {
+                    groupName: currentActiveChat,
+                    lastProcessedMessageTimestamp: details.timestamp,
+                    lastProcessedMessageId: details.id || null,
+                    backfillComplete: true,
+                    status: "MONITORING",
+                    messagesScannedIncrement: 1,
+                    messagesProcessedIncrement: 1,
+                    messagesIgnoredIncrement: 0
+                  });
+                }).catch(err => {
+                  currentScanStats.errors++;
+                  currentScanStats.failedMessageCount++;
+                  currentScanStats.errorReason = err.message || "Failed processing message";
+                  setCollectorState("ERROR", currentActiveChat, { errorReason: err.message, failedMessageCount: 1 });
                 });
               }
             }
@@ -1139,137 +1126,269 @@
   }
 
   // ===========================================================================
-  // 14. STATUS BADGE UI (FLOATING PILL)
-  // Badge states:
-  // 🟢 ACC Collector: Monitoring Group
-  // 🟡 ACC Collector: Backfilling Group
-  // 🔵 ACC Collector: Scanning Groups
-  // ⚪ ACC Collector: Personal Chat Ignored
-  // ⚪ ACC Collector: Inactive
-  // 🔴 ACC Collector: Backend Error / WhatsApp Unavailable
+  // 11. FLOATING STATUS BADGE UX (BOTTOM-LEFT PILL & POPOVER)
+  // Position: Bottom-Left of WhatsApp Web
+  // Style: Small, compact, unobtrusive floating pill with attached tooltip popover
   // ===========================================================================
-  let badgeEl = null;
+  let containerEl = null;
+  let pillEl = null;
+  let popoverEl = null;
 
   function createStatusBadge() {
-    if (badgeEl) return;
+    if (containerEl) return;
 
-    badgeEl = document.createElement("div");
-    badgeEl.id = "acc-collector-badge";
-    badgeEl.style.cssText = `
+    containerEl = document.createElement("div");
+    containerEl.id = "acc-collector-container";
+    containerEl.style.cssText = `
       position: fixed;
-      bottom: 16px;
-      right: 16px;
+      bottom: 20px;
+      left: 20px;
       z-index: 999999;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      user-select: none;
+    `;
+
+    // Tooltip Popover (appears above pill when clicked or hovered)
+    popoverEl = document.createElement("div");
+    popoverEl.id = "acc-collector-popover";
+    popoverEl.style.cssText = `
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 0;
+      min-width: 240px;
+      max-width: 300px;
       background: #0f172a;
       color: #f8fafc;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      padding: 10px 14px;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
       font-size: 11px;
+      line-height: 1.5;
+      display: none;
+      pointer-events: auto;
+    `;
+
+    // Main Floating Pill
+    pillEl = document.createElement("div");
+    pillEl.id = "acc-collector-pill";
+    pillEl.style.cssText = `
+      background: #0f172a;
+      color: #f8fafc;
+      font-size: 11px;
+      font-weight: 500;
       padding: 6px 12px;
       border-radius: 20px;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      box-shadow: 0 4px 14px rgba(0,0,0,0.35);
       border: 1px solid #334155;
-      display: flex;
+      display: inline-flex;
       align-items: center;
       gap: 8px;
       cursor: pointer;
-      user-select: none;
+      white-space: nowrap;
       transition: all 0.2s ease;
+      max-width: 440px;
     `;
 
-    badgeEl.title = "Academic Command Center Collector v3.0 - Click for details";
-    badgeEl.addEventListener("click", () => {
-      const monitored = currentIsGroup && isGroupMonitored(currentActiveChat);
-      alert(
-        `🎓 Academic Command Center Collector v3.0\n\n` +
-        `• Active Chat: ${currentActiveChat || "None"}\n` +
-        `• Chat Type: ${currentIsGroup ? (monitored ? "GROUP (Observing)" : "GROUP (Not Monitored)") : (currentActiveChat ? "PERSONAL (Ignored)" : "None")}\n` +
-        `• Collector State: ${collectorState}\n` +
-        `• Scan Interval: Every 2 Hours (${CONFIG.scanIntervalMs / 60000} mins)\n` +
-        `• Initial Backfill Boundary: 10 Sep 2026\n` +
-        `• Groups Discovered: ${stats.groupsDiscovered}\n` +
-        `• Messages Captured: ${stats.received}\n` +
-        `• Filtered Chatter: ${stats.filteredChatter}\n` +
-        `• Sent to Backend: ${stats.sentToBackend}\n` +
-        `• Errors: ${stats.errors}\n\n` +
-        `Backend: ${CONFIG.backendUrl}`
-      );
+    // Toggle popover on pill click
+    pillEl.addEventListener("click", e => {
+      e.stopPropagation();
+      isPopoverOpen = !isPopoverOpen;
+      popoverEl.style.display = isPopoverOpen ? "block" : "none";
+      updateStatusBadge();
     });
 
-    document.body.appendChild(badgeEl);
+    // Close popover when clicking anywhere outside
+    document.addEventListener("click", () => {
+      if (isPopoverOpen) {
+        isPopoverOpen = false;
+        popoverEl.style.display = "none";
+        updateStatusBadge();
+      }
+    });
+
+    // Keep popover visible on hover
+    containerEl.addEventListener("mouseenter", () => {
+      popoverEl.style.display = "block";
+    });
+
+    containerEl.addEventListener("mouseleave", () => {
+      if (!isPopoverOpen) {
+        popoverEl.style.display = "none";
+      }
+    });
+
+    containerEl.appendChild(popoverEl);
+    containerEl.appendChild(pillEl);
+    document.body.appendChild(containerEl);
+
     updateStatusBadge();
   }
 
-  function updateStatusBadge() {
-    if (!badgeEl) return;
+  function getBadgeMainText() {
+    const group = currentScanStats.groupName || currentActiveChat || "";
+    const status = currentScanStats.scanStatus;
+    const count = currentScanStats.academicMessages;
 
-    let dotColor = "#94a3b8";
-    let statusText = "Inactive";
+    switch (status) {
+      case "SCANNING":
+        return count > 0
+          ? `🟡 ACC Collector: Scanning · ${group} · ${count}`
+          : `🟡 ACC Collector: Scanning · ${group}`;
 
-    if (collectorState === "WHATSAPP_UNAVAILABLE" || collectorState === "ERROR") {
-      dotColor = "#ef4444";
-      statusText = collectorState === "WHATSAPP_UNAVAILABLE" ? "WhatsApp Unavailable" : "Backend Error";
-    } else if (collectorState === "BACKFILLING") {
-      dotColor = "#eab308"; // Yellow
-      statusText = "Backfilling Group";
-    } else if (collectorState === "SCANNING" || collectorState === "DISCOVERING_GROUPS") {
-      dotColor = "#38bdf8"; // Blue
-      statusText = "Scanning Groups";
-    } else if (currentActiveChat) {
-      if (currentIsGroup) {
-        if (isGroupMonitored(currentActiveChat)) {
-          dotColor = "#22c55e"; // Green
-          statusText = "Monitoring Group";
-        } else {
-          dotColor = "#eab308";
-          statusText = "Group Not Monitored";
+      case "COMPLETE":
+        if (isMonitoringActive) {
+          return `🟢 ACC Collector: Monitoring · ${group}`;
         }
-      } else {
-        dotColor = "#94a3b8"; // Gray
-        statusText = "Personal Chat Ignored";
-      }
+        return count > 0
+          ? `🟢 ACC Collector: Scan Complete · ${group} · ${count} processed`
+          : `🟢 ACC Collector: Scan Complete · ${group}`;
+
+      case "ERROR":
+        return `🔴 ACC Collector: Scan Error · ${group}`;
+
+      case "PERSONAL_IGNORED":
+        return `⚪ ACC Collector: Personal Chat Ignored`;
+
+      case "GROUP_NOT_MONITORED":
+        return `⚪ ACC Collector: Group Not Monitored`;
+
+      case "WHATSAPP_UNAVAILABLE":
+        return `🔴 ACC Collector: WhatsApp Unavailable`;
+
+      case "IDLE":
+      default:
+        return `⚪ ACC Collector: Idle`;
+    }
+  }
+
+  function renderPopoverContent() {
+    const group = currentScanStats.groupName || currentActiveChat || "None";
+    const status = currentScanStats.scanStatus;
+    const formattedLastProcessed = formatDisplayDate(currentScanStats.lastProcessedTimestamp);
+
+    if (status === "COMPLETE" || (status === "SCANNING" && isMonitoringActive)) {
+      return `
+        <div style="font-weight:700;font-size:12px;color:#22c55e;margin-bottom:6px">Group: ${group}</div>
+        <div style="display:grid;gap:3px;color:#cbd5e1">
+          <div><strong>Status:</strong> COMPLETE</div>
+          <div><strong>Messages processed:</strong> ${currentScanStats.academicMessages}</div>
+          <div><strong>Academic messages:</strong> ${currentScanStats.academicMessages}</div>
+          <div><strong>Ignored:</strong> ${currentScanStats.messagesIgnored}</div>
+          <div><strong>Duplicates:</strong> ${currentScanStats.duplicates}</div>
+          <div><strong>Events created:</strong> +${currentScanStats.eventsCreated}</div>
+          <div><strong>Events updated:</strong> ~${currentScanStats.eventsUpdated}</div>
+          <div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;color:#94a3b8">
+            <strong>Last processed:</strong><br><span style="color:#f8fafc">${formattedLastProcessed}</span>
+          </div>
+          <div style="color:#22c55e;margin-top:2px"><strong>Cursor:</strong> Saved</div>
+        </div>
+      `;
     }
 
-    const groupLabel = currentIsGroup && currentActiveChat
-      ? `<span style="color:#38bdf8;font-weight:600;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${currentActiveChat}</span>`
-      : "";
+    if (status === "ERROR") {
+      return `
+        <div style="font-weight:700;font-size:12px;color:#ef4444;margin-bottom:6px">Group: ${group}</div>
+        <div style="display:grid;gap:3px;color:#cbd5e1">
+          <div><strong>Status:</strong> ERROR</div>
+          <div><strong>Messages scanned:</strong> ${currentScanStats.messagesScanned}</div>
+          <div><strong>Messages processed:</strong> ${currentScanStats.academicMessages}</div>
+          <div><strong>Messages failed:</strong> ${currentScanStats.failedMessageCount}</div>
+          <div style="margin-top:4px;padding-top:4px;border-top:1px solid #334155;color:#94a3b8">
+            <strong>Last successful message:</strong><br><span style="color:#f8fafc">${formattedLastProcessed}</span>
+          </div>
+          <div style="color:#f87171;margin-top:2px;word-break:break-word">
+            <strong>Error reason:</strong><br>${currentScanStats.errorReason || "Processing failed"}
+          </div>
+          <div style="color:#eab308;margin-top:2px"><strong>Cursor:</strong> Held at last successful message</div>
+        </div>
+      `;
+    }
 
-    badgeEl.innerHTML = `
-      <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${dotColor};box-shadow:0 0 6px ${dotColor}"></span>
-      <span style="font-weight:600">ACC Collector:</span>
-      <span>${statusText}</span>
-      ${groupLabel}
-      <span style="background:#1e293b;padding:2px 6px;border-radius:10px;font-size:10px;margin-left:4px">🚀 ${stats.sentToBackend}</span>
+    if (status === "SCANNING") {
+      return `
+        <div style="font-weight:700;font-size:12px;color:#eab308;margin-bottom:6px">Group: ${group}</div>
+        <div style="display:grid;gap:3px;color:#cbd5e1">
+          <div><strong>Status:</strong> SCANNING</div>
+          <div><strong>Messages scanned:</strong> ${currentScanStats.messagesScanned}</div>
+          <div><strong>Academic processed:</strong> ${currentScanStats.academicMessages}</div>
+          <div><strong>Ignored:</strong> ${currentScanStats.messagesIgnored}</div>
+          <div><strong>Duplicates:</strong> ${currentScanStats.duplicates}</div>
+          <div><strong>Created:</strong> +${currentScanStats.eventsCreated}</div>
+          <div><strong>Updated:</strong> ~${currentScanStats.eventsUpdated}</div>
+          <div style="color:#38bdf8;margin-top:4px;font-size:10px">Processing in progress...</div>
+        </div>
+      `;
+    }
+
+    if (status === "PERSONAL_IGNORED") {
+      return `
+        <div style="font-weight:700;font-size:12px;color:#94a3b8;margin-bottom:4px">Personal Chat: ${group}</div>
+        <div style="color:#94a3b8">1-to-1 personal chats are strictly ignored for privacy. No messages or cursors are collected.</div>
+      `;
+    }
+
+    if (status === "GROUP_NOT_MONITORED") {
+      return `
+        <div style="font-weight:700;font-size:12px;color:#94a3b8;margin-bottom:4px">Group: ${group}</div>
+        <div style="color:#94a3b8">This group is not in the configured academic allowlist. Message collection and Gemini parsing are disabled.</div>
+      `;
+    }
+
+    if (status === "WHATSAPP_UNAVAILABLE") {
+      return `
+        <div style="font-weight:700;font-size:12px;color:#ef4444;margin-bottom:4px">WhatsApp Unavailable</div>
+        <div style="color:#f87171">Backend server unreachable or WhatsApp Web disconnected. Please ensure localhost:3000 is running.</div>
+      `;
+    }
+
+    return `
+      <div style="font-weight:700;font-size:12px;color:#94a3b8;margin-bottom:4px">ACC Collector: Idle</div>
+      <div style="color:#94a3b8">Open one of the 6 monitored academic groups to trigger scanning.</div>
     `;
   }
 
-  // ===========================================================================
-  // 15. INITIALIZATION & RECURRING 2-HOUR SCHEDULER
-  // ===========================================================================
-  let scanIntervalTimer = null;
+  function updateStatusBadge() {
+    if (!pillEl) return;
 
+    const mainText = getBadgeMainText();
+
+    // Rocket counter strictly shows messages processed during THIS scan
+    const rocketHtml = `
+      <span style="background:#1e293b;border:1px solid #334155;padding:1px 6px;border-radius:10px;font-size:10px;font-weight:700;color:#38bdf8;margin-left:auto" title="Messages processed during current scan">
+        🚀 ${currentScanStats.academicMessages}
+      </span>
+    `;
+
+    pillEl.innerHTML = `
+      <span>${mainText}</span>
+      ${rocketHtml}
+    `;
+
+    if (popoverEl) {
+      popoverEl.innerHTML = renderPopoverContent();
+    }
+  }
+
+  // ===========================================================================
+  // 12. INITIALIZATION
+  // ===========================================================================
   function init() {
-    log("Initializing Academic Command Center Collector v3.0 (2-Hour Scheduler & Backfill)...");
+    log("Initializing Academic Command Center Collector v3.2 (Bottom-Left Floating Badge UX)...");
     createStatusBadge();
 
-    // Check periodically for chat header change
+    // Check periodically for chat header changes
     setInterval(() => {
       handleChatSwitch();
-    }, 1500);
+    }, 1000);
 
     // Start live DOM observer
     startObserver();
 
-    // Initial scan cycle immediately upon startup
+    // Check active chat immediately
     setTimeout(() => {
-      runFullScanCycle();
-    }, 3000);
-
-    // Setup recurring 2-hour scan cycle
-    if (scanIntervalTimer) clearInterval(scanIntervalTimer);
-    scanIntervalTimer = setInterval(() => {
-      log("2-hour interval elapsed. Triggering scheduled scan cycle...");
-      runFullScanCycle();
-    }, CONFIG.scanIntervalMs);
+      handleChatSwitch();
+    }, 1000);
   }
 
   // Poll for WhatsApp Web interface readiness

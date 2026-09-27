@@ -55,7 +55,7 @@ const INITIAL_DEMO_ITEMS: AcademicItem[] = [
     subject: "NLP",
     type: "LAB",
     status: "NOT_STARTED",
-    deadline: `${toLocalDateString(new Date())}T11:35:00`,
+    deadline: "2026-09-27T11:35:00",
     submissionUrl: "https://classroom.google.com",
     resourceUrls: [],
     attachmentNames: ["Lab2_Practice_Questions.ipynb"],
@@ -65,8 +65,8 @@ const INITIAL_DEMO_ITEMS: AcademicItem[] = [
     originalMessages: [
       "Students can practice the lab2 practice question and upload the document before 11:35 am. Submit here: https://classroom.google.com"
     ],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: "2026-09-27T08:00:00.000Z",
+    updatedAt: "2026-09-27T08:00:00.000Z",
     changeHistory: [],
     confidence: "HIGH"
   },
@@ -86,8 +86,8 @@ const INITIAL_DEMO_ITEMS: AcademicItem[] = [
     originalMessages: [
       "Slip test 2 will be conducted on 30-09-2026 during the first hour."
     ],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: "2026-09-27T08:00:00.000Z",
+    updatedAt: "2026-09-27T08:00:00.000Z",
     changeHistory: [],
     confidence: "HIGH"
   },
@@ -97,7 +97,7 @@ const INITIAL_DEMO_ITEMS: AcademicItem[] = [
     subject: "NEEDS_CONFIRMATION",
     type: "ANNOUNCEMENT",
     status: "INBOX",
-    eventDate: toLocalDateString(new Date()),
+    eventDate: "2026-09-27",
     resourceUrls: [],
     attachmentNames: [],
     description: "Today is the last date to collect the answer sheets from the staff room.",
@@ -105,8 +105,8 @@ const INITIAL_DEMO_ITEMS: AcademicItem[] = [
     originalMessages: [
       "Today is the last date to collect the answer sheets from the staff room."
     ],
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
+    createdAt: "2026-09-27T08:00:00.000Z",
+    updatedAt: "2026-09-27T08:00:00.000Z",
     changeHistory: [],
     confidence: "NEEDS_CONFIRMATION"
   }
@@ -170,19 +170,26 @@ const SAMPLE_MESSAGES = [
 ];
 
 export default function Dashboard() {
-  const [items, setItems] = useState<AcademicItem[]>(() => {
+  const [items, setItems] = useState<AcademicItem[]>(INITIAL_DEMO_ITEMS);
+  const [isMounted, setIsMounted] = useState(false);
+
+  // Client-side initialization for browser-dependent values (eliminates SSR hydration mismatch)
+  useEffect(() => {
+    setIsMounted(true);
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("academic_command_center_items");
       if (saved) {
         try {
-          return JSON.parse(saved);
+          const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setItems(parsed);
+          }
         } catch {
-          // fallback to demo
+          // fallback to initial demo
         }
       }
     }
-    return INITIAL_DEMO_ITEMS;
-  });
+  }, []);
 
   const [message, setMessage] = useState("");
   const [sourceGroup, setSourceGroup] = useState("");
@@ -198,15 +205,42 @@ export default function Dashboard() {
   const [expandedHistory, setExpandedHistory] = useState<Record<string, boolean>>({});
   const [expandedOriginal, setExpandedOriginal] = useState<Record<string, boolean>>({});
 
-  // Save to localStorage on change
+  // Save to localStorage on change (only after initial client mount)
   useEffect(() => {
-    if (typeof window !== "undefined") {
+    if (isMounted && typeof window !== "undefined") {
       localStorage.setItem("academic_command_center_items", JSON.stringify(items));
     }
-  }, [items]);
+  }, [items, isMounted]);
 
-  // Dynamic reference date (now)
-  const now = useMemo(() => new Date(), [items]);
+  // Reference date: Deterministic fallback during SSR to ensure identical server-rendered HTML
+  const ssrReferenceDate = useMemo(() => new Date("2026-09-27T12:00:00+05:30"), []);
+  const now = useMemo(() => (isMounted ? new Date() : ssrReferenceDate), [isMounted, items]);
+
+  // Safe formatting helpers that prevent hydration mismatches
+  const formatTimeSafe = (isoStr?: string | null): string => {
+    if (!isoStr) return "Never";
+    if (!isMounted) {
+      const m = isoStr.match(/T(\d{2}:\d{2})/);
+      return m ? m[1] : isoStr.slice(0, 10);
+    }
+    try {
+      return new Date(isoStr).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    } catch (_) {
+      return isoStr;
+    }
+  };
+
+  const formatDateTimeSafe = (isoStr?: string | null): string => {
+    if (!isoStr) return "Never";
+    if (!isMounted) {
+      return isoStr.slice(0, 16).replace("T", " ");
+    }
+    try {
+      return new Date(isoStr).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    } catch (_) {
+      return isoStr;
+    }
+  };
 
   // Statistics
   const stats = useMemo(() => {
@@ -495,6 +529,13 @@ export default function Dashboard() {
     messagesIgnored: number;
     eventsCreated: number;
     eventsUpdated: number;
+    scanStatus?: "IDLE" | "SCANNING" | "COMPLETE" | "ERROR";
+    scanStartedAt?: string | null;
+    scanCompletedAt?: string | null;
+    academicMessages?: number;
+    duplicates?: number;
+    errors?: number;
+    lastProcessedTimestamp?: string | null;
     groups: CollectorGroupState[];
     recentScans: CollectorScanHistory[];
   }
@@ -515,6 +556,56 @@ export default function Dashboard() {
       }
     } catch (err) {
       console.warn("Could not load collector stats:", err);
+    }
+  }
+
+  // Database Data Cleanup handlers
+  const [cleanupLoading, setCleanupLoading] = useState(false);
+  const [cleanupPreview, setCleanupPreview] = useState<any>(null);
+
+  async function handlePreviewCleanup() {
+    setCleanupLoading(true);
+    try {
+      const res = await fetch("/api/events/cleanup");
+      const data = await res.json();
+      if (data.success) {
+        setCleanupPreview(data.preview);
+      }
+    } catch (err) {
+      console.error("Cleanup preview failed:", err);
+    } finally {
+      setCleanupLoading(false);
+    }
+  }
+
+  async function handleExecuteCleanup() {
+    if (!confirm("Are you sure you want to permanently delete identified invalid events (e.g. promotional spam or events from unallowed groups)? Legitimate academic events will NEVER be deleted.")) return;
+    setCleanupLoading(true);
+    try {
+      const res = await fetch("/api/events/cleanup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dryRun: false })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setNotice({
+          type: "success",
+          text: `Cleaned up ${data.result.deletedCount} invalid events successfully.`
+        });
+        setCleanupPreview(null);
+        // Refresh server events
+        fetch("/api/events")
+          .then(r => r.json())
+          .then(d => {
+            if (d.items) setItems(d.items);
+          })
+          .catch(() => {});
+      }
+    } catch (err) {
+      console.error("Cleanup execution failed:", err);
+    } finally {
+      setCleanupLoading(false);
     }
   }
 
@@ -737,7 +828,7 @@ export default function Dashboard() {
                 <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Last Scan</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "#0f172a", marginTop: 4 }}>
                   {collectorData?.lastScan?.startedAt
-                    ? new Date(collectorData.lastScan.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                    ? formatTimeSafe(collectorData.lastScan.startedAt)
                     : "No scans yet"}
                 </div>
                 <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>
@@ -751,7 +842,7 @@ export default function Dashboard() {
                 <div style={{ fontSize: 11, color: "#64748b", fontWeight: 600 }}>Next Scheduled Scan</div>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "#2563eb", marginTop: 4 }}>
                   {collectorData?.nextScan
-                    ? new Date(collectorData.nextScan).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+                    ? formatTimeSafe(collectorData.nextScan)
                     : "Every 2 Hours"}
                 </div>
                 <div style={{ fontSize: 10, color: "#64748b", marginTop: 2 }}>2-hour recurring</div>
@@ -852,31 +943,286 @@ export default function Dashboard() {
               </div>
             </div>
 
-            {/* Per-Group Status Table (Requirement 24) */}
-            <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px", overflowX: "auto" }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
-                  Discovered WhatsApp Groups & Cursors
-                </span>
-                <span style={{ fontSize: 11, color: "#64748b" }}>
-                  Initial backfill boundary: <strong>2026-09-10</strong>
-                </span>
+            {/* Manual Group Scan Status Card (Requirement 11) */}
+            <div
+              style={{
+                background: "#ffffff",
+                border: "1px solid #e2e8f0",
+                borderRadius: 12,
+                padding: "14px 16px",
+                display: "grid",
+                gap: 12
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                    Manual Group Scan Status
+                  </span>
+                  <span
+                    style={{
+                      fontSize: 11,
+                      fontWeight: 700,
+                      padding: "2px 8px",
+                      borderRadius: 12,
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 5,
+                      background:
+                        (collectorStats?.scanStatus === "SCANNING") ? "#fef3c7" :
+                        (collectorStats?.scanStatus === "COMPLETE") ? "#dcfce7" :
+                        (collectorStats?.scanStatus === "ERROR") ? "#fee2e2" : "#f1f5f9",
+                      color:
+                        (collectorStats?.scanStatus === "SCANNING") ? "#b45309" :
+                        (collectorStats?.scanStatus === "COMPLETE") ? "#15803d" :
+                        (collectorStats?.scanStatus === "ERROR") ? "#b91c1c" : "#475569",
+                      border: `1px solid ${
+                        (collectorStats?.scanStatus === "SCANNING") ? "#fde68a" :
+                        (collectorStats?.scanStatus === "COMPLETE") ? "#bbf7d0" :
+                        (collectorStats?.scanStatus === "ERROR") ? "#fecaca" : "#e2e8f0"
+                      }`
+                    }}
+                  >
+                    <span>
+                      {(collectorStats?.scanStatus === "SCANNING") ? "🟡 Scanning" :
+                       (collectorStats?.scanStatus === "COMPLETE") ? "✅ Scan Complete" :
+                       (collectorStats?.scanStatus === "ERROR") ? "🔴 Scan Error" : "⚪ Idle"}
+                    </span>
+                  </span>
+                </div>
+                <div style={{ fontSize: 11, color: "#64748b" }}>
+                  Per-group scan triggered on manual group selection
+                </div>
               </div>
+
+              {/* 12 Required Fields Grid */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))",
+                  gap: 10,
+                  fontSize: 12
+                }}
+              >
+                {/* 1. Current Group */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Current Group</div>
+                  <div style={{ fontWeight: 700, color: "#0f172a", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={collectorStats?.currentGroup || "None"}>
+                    {collectorStats?.currentGroup || "None"}
+                  </div>
+                </div>
+
+                {/* 2. Scan Status */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Scan Status</div>
+                  <div style={{ fontWeight: 800, marginTop: 2, color:
+                    (collectorStats?.scanStatus === "SCANNING") ? "#d97706" :
+                    (collectorStats?.scanStatus === "COMPLETE") ? "#16a34a" :
+                    (collectorStats?.scanStatus === "ERROR") ? "#dc2626" : "#64748b"
+                  }}>
+                    {collectorStats?.scanStatus || "IDLE"}
+                  </div>
+                </div>
+
+                {/* 3. Scan Started */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Scan Started</div>
+                  <div style={{ fontWeight: 600, color: "#0f172a", marginTop: 2 }}>
+                    {collectorStats?.scanStartedAt ? formatTimeSafe(collectorStats.scanStartedAt) : "—"}
+                  </div>
+                </div>
+
+                {/* 4. Scan Completed */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Scan Completed</div>
+                  <div style={{ fontWeight: 600, color: "#0f172a", marginTop: 2 }}>
+                    {collectorStats?.scanCompletedAt ? formatTimeSafe(collectorStats.scanCompletedAt) : "—"}
+                  </div>
+                </div>
+
+                {/* 5. Messages Scanned */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Messages Scanned</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "#0f172a", marginTop: 2 }}>
+                    {collectorStats?.messagesScanned ?? 0}
+                  </div>
+                </div>
+
+                {/* 6. Academic Messages */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Academic Messages</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "#2563eb", marginTop: 2 }}>
+                    {collectorStats?.academicMessages ?? 0}
+                  </div>
+                </div>
+
+                {/* 7. Ignored */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Ignored</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "#64748b", marginTop: 2 }}>
+                    {collectorStats?.messagesIgnored ?? 0}
+                  </div>
+                </div>
+
+                {/* 8. Duplicates */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Duplicates</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "#eab308", marginTop: 2 }}>
+                    {collectorStats?.duplicates ?? 0}
+                  </div>
+                </div>
+
+                {/* 9. Created */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Created</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "#16a34a", marginTop: 2 }}>
+                    +{collectorStats?.eventsCreated ?? 0}
+                  </div>
+                </div>
+
+                {/* 10. Updated */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Updated</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: "#0284c7", marginTop: 2 }}>
+                    ~{collectorStats?.eventsUpdated ?? 0}
+                  </div>
+                </div>
+
+                {/* 11. Errors */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Errors</div>
+                  <div style={{ fontSize: 14, fontWeight: 800, color: (collectorStats?.errors ?? 0) > 0 ? "#dc2626" : "#64748b", marginTop: 2 }}>
+                    {collectorStats?.errors ?? 0}
+                  </div>
+                </div>
+
+                {/* 12. Last Processed */}
+                <div style={{ background: "#f8fafc", padding: "8px 10px", borderRadius: 8, border: "1px solid #e2e8f0" }}>
+                  <div style={{ fontSize: 10, color: "#64748b", fontWeight: 600, textTransform: "uppercase" }}>Last Processed</div>
+                  <div style={{ fontWeight: 600, color: "#0f172a", marginTop: 2 }}>
+                    {collectorStats?.lastProcessedTimestamp ? formatDateTimeSafe(collectorStats.lastProcessedTimestamp) : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Error Detail Banner if in ERROR state */}
+              {collectorStats?.scanStatus === "ERROR" && collectorStats?.lastError && (
+                <div style={{ background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: 8, padding: "8px 12px", fontSize: 11, color: "#9f1239" }}>
+                  <strong>Error Reason:</strong> {collectorStats.lastError} (Cursor not advanced past failed message)
+                </div>
+              )}
+            </div>
+
+            {/* Monitored WhatsApp Groups Table (Explicit Academic Allowlist) */}
+            <div style={{ background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px", overflowX: "auto" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
+                <div>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#0f172a" }}>
+                    Monitored WhatsApp Groups (Academic Allowlist)
+                  </span>
+                  <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>
+                    Only messages from configured groups are processed. Disallowed groups (e.g. Embedded Project, Personal) are ignored.
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <button
+                    onClick={handlePreviewCleanup}
+                    disabled={cleanupLoading}
+                    style={{
+                      background: "#fef2f2",
+                      color: "#991b1b",
+                      border: "1px solid #fecaca",
+                      borderRadius: 6,
+                      padding: "5px 10px",
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 4
+                    }}
+                  >
+                    <ShieldCheck size={13} />
+                    {cleanupLoading ? "Checking..." : "Review / Cleanup Spam"}
+                  </button>
+                  <span style={{ fontSize: 11, color: "#64748b" }}>
+                    Backfill start: <strong>2026-09-10</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Cleanup Preview Panel if triggered */}
+              {cleanupPreview && (
+                <div style={{ background: "#fff1f2", border: "1px solid #fecdd3", borderRadius: 8, padding: "12px", marginBottom: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ fontWeight: 700, color: "#9f1239", fontSize: 12 }}>
+                      ⚠️ Found {cleanupPreview.candidatesCount} Invalid Event(s) for Cleanup:
+                    </div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {cleanupPreview.candidatesCount > 0 && (
+                        <button
+                          onClick={handleExecuteCleanup}
+                          disabled={cleanupLoading}
+                          style={{
+                            background: "#e11d48",
+                            color: "#ffffff",
+                            border: "none",
+                            borderRadius: 4,
+                            padding: "4px 8px",
+                            fontSize: 11,
+                            fontWeight: 700,
+                            cursor: "pointer"
+                          }}
+                        >
+                          Delete {cleanupPreview.candidatesCount} Invalid Events
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setCleanupPreview(null)}
+                        style={{
+                          background: "#ffffff",
+                          color: "#475569",
+                          border: "1px solid #cbd5e1",
+                          borderRadius: 4,
+                          padding: "4px 8px",
+                          fontSize: 11,
+                          cursor: "pointer"
+                        }}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                  {cleanupPreview.candidates.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#15803d" }}>✓ No invalid, promotional, or unallowed group events found. All academic events are legitimate!</div>
+                  ) : (
+                    <div style={{ display: "grid", gap: 6, maxHeight: "160px", overflowY: "auto" }}>
+                      {cleanupPreview.candidates.map((c: any) => (
+                        <div key={c.id} style={{ fontSize: 11, background: "#ffffff", padding: "6px 8px", borderRadius: 4, border: "1px solid #ffe4e6" }}>
+                          <span style={{ fontWeight: 700, color: "#881337" }}>[{c.reason}]</span>{" "}
+                          <span style={{ fontWeight: 600, color: "#0f172a" }}>"{c.title}"</span>{" "}
+                          <span style={{ color: "#64748b" }}>({c.sourceGroup || "No Group"})</span> - {c.detail}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {!collectorData?.groups || collectorData.groups.length === 0 ? (
                 <div style={{ textAlign: "center", padding: "16px", color: "#64748b", fontSize: 12 }}>
-                  No WhatsApp groups registered yet. Ensure WhatsApp Web is open with the collector userscript enabled.
+                  Configured allowed groups will appear here as soon as collector connects.
                 </div>
               ) : (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, textAlign: "left" }}>
                   <thead>
                     <tr style={{ borderBottom: "1px solid #e2e8f0", color: "#64748b", textTransform: "uppercase", fontSize: 11 }}>
-                      <th style={{ padding: "6px 8px" }}>Group</th>
-                      <th style={{ padding: "6px 8px" }}>Backfill</th>
-                      <th style={{ padding: "6px 8px" }}>From</th>
+                      <th style={{ padding: "6px 8px" }}>Group Name</th>
+                      <th style={{ padding: "6px 8px" }}>Status</th>
+                      <th style={{ padding: "6px 8px" }}>Messages Collected</th>
                       <th style={{ padding: "6px 8px" }}>Last Processed</th>
                       <th style={{ padding: "6px 8px" }}>Last Scan</th>
-                      <th style={{ padding: "6px 8px" }}>Status</th>
+                      <th style={{ padding: "6px 8px" }}>Backfill Status</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -891,24 +1237,23 @@ export default function Dashboard() {
                             borderRadius: 4,
                             fontSize: 10,
                             fontWeight: 700,
-                            background: g.backfillComplete ? "#dcfce7" : (g.status === "BACKFILLING" ? "#fef3c7" : "#f1f5f9"),
-                            color: g.backfillComplete ? "#15803d" : (g.status === "BACKFILLING" ? "#b45309" : "#64748b")
+                            background: (g as any).isAllowed !== false ? "#dcfce7" : "#fee2e2",
+                            color: (g as any).isAllowed !== false ? "#15803d" : "#b91c1c"
                           }}>
-                            {g.backfillComplete ? "COMPLETED" : (g.status === "BACKFILLING" ? "IN PROGRESS" : "PENDING")}
+                            {(g as any).isAllowed !== false ? "ALLOWED & MONITORED" : "DISALLOWED / IGNORED"}
                           </span>
                         </td>
-                        <td style={{ padding: "8px 8px", color: "#64748b", fontFamily: "monospace", fontSize: 11 }}>
-                          {g.firstBackfillDate || "2026-09-10"}
+                        <td style={{ padding: "8px 8px", color: "#0f172a" }}>
+                          <span style={{ fontWeight: 700 }}>{g.messagesProcessed || 0}</span>
+                          <span style={{ color: "#64748b", fontSize: 11, marginLeft: 4 }}>
+                            ({g.messagesScanned || 0} scanned)
+                          </span>
                         </td>
                         <td style={{ padding: "8px 8px", color: "#334155" }}>
-                          {g.lastProcessedMessageTimestamp
-                            ? new Date(g.lastProcessedMessageTimestamp).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })
-                            : "None yet"}
+                          {formatDateTimeSafe(g.lastProcessedMessageTimestamp)}
                         </td>
                         <td style={{ padding: "8px 8px", color: "#64748b" }}>
-                          {g.lastScanTime
-                            ? new Date(g.lastScanTime).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-                            : "Never"}
+                          {formatTimeSafe(g.lastScanTime)}
                         </td>
                         <td style={{ padding: "8px 8px" }}>
                           <span style={{
@@ -916,12 +1261,10 @@ export default function Dashboard() {
                             borderRadius: 4,
                             fontSize: 10,
                             fontWeight: 700,
-                            background: g.status === "SCANNING" || g.status === "BACKFILLING" ? "#dbeafe" :
-                                        g.status === "ERROR" ? "#fee2e2" : "#f1f5f9",
-                            color: g.status === "SCANNING" || g.status === "BACKFILLING" ? "#1e40af" :
-                                   g.status === "ERROR" ? "#b91c1c" : "#475569"
+                            background: g.backfillComplete ? "#dcfce7" : (g.status === "BACKFILLING" ? "#fef3c7" : "#f1f5f9"),
+                            color: g.backfillComplete ? "#15803d" : (g.status === "BACKFILLING" ? "#b45309" : "#64748b")
                           }}>
-                            {g.status}
+                            {g.backfillComplete ? "COMPLETED" : (g.status === "BACKFILLING" ? "IN PROGRESS" : "PENDING")}
                           </span>
                         </td>
                       </tr>
@@ -966,12 +1309,10 @@ export default function Dashboard() {
                             {s.id.slice(0, 8)}
                           </td>
                           <td style={{ padding: "8px 8px", color: "#334155" }}>
-                            {new Date(s.startedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}
+                            {formatTimeSafe(s.startedAt)}
                           </td>
                           <td style={{ padding: "8px 8px", color: "#334155" }}>
-                            {s.completedAt
-                              ? new Date(s.completedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
-                              : "In Progress..."}
+                            {s.completedAt ? formatTimeSafe(s.completedAt) : "In Progress..."}
                           </td>
                           <td style={{ padding: "8px 8px", color: "#64748b" }}>
                             {dur !== null ? `${dur}s` : "-"}
@@ -1780,7 +2121,7 @@ export default function Dashboard() {
                         {item.changeHistory.map(change => (
                           <div key={change.id} style={{ fontSize: 12, color: "#7c2d12" }}>
                             <span style={{ fontWeight: 600 }}>
-                              {new Date(change.timestamp).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}:
+                              {formatTimeSafe(change.timestamp)}:
                             </span>{" "}
                             {change.summary}
                           </div>

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCollectorStats, updateCollectorChatState } from "@/lib/collector/stats";
 import { getAllCollectorGroups, getRecentScans } from "@/lib/db/collectorState";
 import { verifyCollectorAuth } from "@/lib/collector/auth";
+import { ALLOWED_ACADEMIC_GROUPS, isGroupAllowed, normalizeGroupName } from "@/lib/collector/allowedGroups";
 
 export const dynamic = "force-dynamic";
 
@@ -25,19 +26,55 @@ export async function GET() {
   const lastScanTime = lastScan?.startedAt ? new Date(lastScan.startedAt).getTime() : Date.now();
   const nextScanTimestamp = new Date(lastScanTime + 2 * 60 * 60 * 1000).toISOString();
 
+  // Build canonical groups list from configured allowed groups
+  const canonicalGroups = ALLOWED_ACADEMIC_GROUPS.map((allowedName, idx) => {
+    const existing = groups.find(g => normalizeGroupName(g.groupName) === normalizeGroupName(allowedName));
+    if (existing) {
+      return {
+        ...existing,
+        isAllowed: true
+      };
+    }
+    return {
+      id: `allowed-${idx + 1}`,
+      groupName: allowedName,
+      firstBackfillDate: "2026-09-10",
+      lastProcessedMessageTimestamp: null,
+      lastProcessedMessageId: null,
+      lastScanTime: null,
+      backfillComplete: false,
+      status: "MONITORING",
+      lastError: null,
+      messagesScanned: 0,
+      messagesProcessed: 0,
+      messagesIgnored: 0,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      isAllowed: true
+    };
+  });
+
+  // Also include any legacy groups with isAllowed: false
+  const legacyDisallowedGroups = groups
+    .filter(g => !isGroupAllowed(g.groupName))
+    .map(g => ({ ...g, isAllowed: false }));
+
+  const mergedGroups = [...canonicalGroups, ...legacyDisallowedGroups];
+
   // Aggregate group metrics
-  let totalDiscovered = groups.length;
-  let totalCompleted = groups.filter(g => g.backfillComplete).length;
-  let totalFailed = groups.filter(g => g.status === "ERROR" || g.lastError).length;
-  let totalMessagesScanned = groups.reduce((acc, g) => acc + (g.messagesScanned || 0), 0);
-  let totalMessagesProcessed = groups.reduce((acc, g) => acc + (g.messagesProcessed || 0), 0);
-  let totalMessagesIgnored = groups.reduce((acc, g) => acc + (g.messagesIgnored || 0), 0);
+  let totalDiscovered = mergedGroups.length;
+  let totalCompleted = mergedGroups.filter(g => g.backfillComplete).length;
+  let totalFailed = mergedGroups.filter(g => g.status === "ERROR" || g.lastError).length;
+  let totalMessagesScanned = mergedGroups.reduce((acc, g) => acc + (g.messagesScanned || 0), 0);
+  let totalMessagesProcessed = mergedGroups.reduce((acc, g) => acc + (g.messagesProcessed || 0), 0);
+  let totalMessagesIgnored = mergedGroups.reduce((acc, g) => acc + (g.messagesIgnored || 0), 0);
 
   return NextResponse.json({
     status: "ok",
     stats,
     whatsappStatus,
     lastHeartbeatAt,
+    allowedGroups: ALLOWED_ACADEMIC_GROUPS,
     lastScan: lastScan ? {
       id: lastScan.id,
       startedAt: lastScan.startedAt,
@@ -51,12 +88,18 @@ export async function GET() {
     groupsDiscovered: totalDiscovered,
     groupsCompleted: totalCompleted,
     groupsFailed: totalFailed,
-    messagesScanned: totalMessagesScanned,
-    messagesProcessed: totalMessagesProcessed,
-    messagesIgnored: totalMessagesIgnored,
+    messagesScanned: stats.messagesScanned ?? totalMessagesScanned,
+    messagesProcessed: stats.academicMessages ?? totalMessagesProcessed,
+    messagesIgnored: stats.messagesIgnored ?? totalMessagesIgnored,
+    scanStatus: stats.scanStatus || "IDLE",
+    scanStartedAt: stats.scanStartedAt || null,
+    scanCompletedAt: stats.scanCompletedAt || null,
+    duplicates: stats.duplicates ?? 0,
+    errors: stats.errors ?? 0,
+    lastProcessedTimestamp: stats.lastProcessedTimestamp || null,
     eventsCreated: stats.eventsCreated,
     eventsUpdated: stats.eventsUpdated,
-    groups,
+    groups: mergedGroups,
     recentScans
   });
 }
@@ -78,7 +121,19 @@ export async function POST(request: Request) {
     updateCollectorChatState({
       currentGroup: body.currentGroup,
       chatType: body.chatType,
-      collectionStatus: body.collectionStatus
+      collectionStatus: body.collectionStatus,
+      scanStatus: body.scanStatus,
+      scanStartedAt: body.scanStartedAt,
+      scanCompletedAt: body.scanCompletedAt,
+      messagesScanned: body.messagesScanned,
+      academicMessages: body.academicMessages,
+      messagesIgnored: body.messagesIgnored,
+      duplicates: body.duplicates,
+      eventsCreated: body.eventsCreated,
+      eventsUpdated: body.eventsUpdated,
+      errors: body.errors,
+      lastProcessedTimestamp: body.lastProcessedTimestamp,
+      lastError: body.lastError
     });
 
     return NextResponse.json({

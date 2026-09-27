@@ -35,8 +35,10 @@ export default function ReminderCenter() {
 
   // Browser notification permission state
   const [permission, setPermission] = useState<"granted" | "denied" | "default" | "unsupported">("default");
+  const [isMounted, setIsMounted] = useState(false);
 
   useEffect(() => {
+    setIsMounted(true);
     if (typeof window !== "undefined" && "Notification" in window) {
       setPermission(Notification.permission);
     } else {
@@ -190,6 +192,10 @@ export default function ReminderCenter() {
 
   function formatTime(isoStr?: string | null) {
     if (!isoStr) return "None scheduled";
+    if (!isMounted) {
+      // Deterministic SSR representation
+      return isoStr.slice(0, 16).replace("T", " ");
+    }
     try {
       const d = new Date(isoStr);
       return d.toLocaleString("en-IN", {
