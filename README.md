@@ -46,11 +46,15 @@ Supabase PostgreSQL  ← SOURCE OF TRUTH (Primary Database)
   5. `CSE-C Announcements`
   6. `23CSE351 FoDS G1`
   *Personal chats, embedded projects, and unallowed groups are never collected or sent to the backend.*
-- **Announcement Channel & Group Detection**: 3-tier detection hierarchy accurately identifies restricted announcement groups (`CSE-C Announcements`) via bottom composer notices (`"Only admins can send messages"`), header action labels, and exact allowed title matching without requiring participant subtitles or message author headers.
-- **Separate Scan Cursor vs Academic Cursor**: Group state maintains `lastScannedMessageTimestamp` independently from `lastProcessedAcademicMessageTimestamp`. Ignored messages (casual chatter, attendance-only, advertisements, duplicates) advance the scan cursor so reopening a completed group **never** rescans from September 10. Genuine processing errors hold the cursor for automatic retry.
+- **Announcement Channel & Group Detection Hierarchy**: 3-tier detection hierarchy accurately identifies restricted community announcement groups (`CSE-C Announcements`) via bottom composer notices (`"Only admins can send messages"`), header action labels, and exact allowed title matching without requiring ordinary participant subtitles or message author headers.
+- **BiDi Unicode & Dash Normalization**: Transparently strips invisible directional formatting marks (`\u200E`, `\u200F`, `\u200B-\u200D`, `\uFEFF`) and normalizes all Unicode dash/hyphen variants (`[\u2010-\u2015\u2212]`, `"CSE - C"` $\rightarrow$ `"CSE-C"`), guaranteeing 100% exact equality matching against allowed groups in WhatsApp Web.
+- **Academic Relevance & Pre-AI Filtering Engine**: Fast deterministic pre-AI gate that filters out commercial spam (real estate, 0% EMI), casual chatter, and pure attendance updates, while actively recognizing academic broadcasts: assignments, tests, exams, timetable updates, class notices, lectures, sessions, workshops, circulars, and venue allocations.
+- **Announcement Channel Pass-Through**: In broadcast channels like `CSE-C Announcements`, messages sent by faculty/admins automatically bypass narrow keyword gates and are safely delivered to the backend Gemini AI parser.
+- **Resilient Message Extraction**: Multi-tier DOM selectors with fallbacks for virtualized WhatsApp Web message containers, clean inner text extraction, and timestamp recovery (`[data-testid="msg-time"]`, `copyable-text`, `[data-pre-plain-text]`).
+- **Separate Scan Cursor vs Academic Cursor**: Group state maintains `lastScannedMessageTimestamp` independently from `lastProcessedAcademicMessageTimestamp`. Ignored messages (casual chatter, attendance notifications, advertisements, duplicates) advance the scan cursor so reopening a completed group **never** rescans from September 10. Genuine processing errors hold the cursor for automatic retry.
 - **Multi-Event Extraction**: Complex faculty messages announcing multiple deadlines or dates (e.g., *"Quiz 2 Oct 8th and tutorial Oct 15th. Case study Oct 21 and 22."*) are automatically split into distinct academic events, each with independent reminder schedules, database records, and Notion pages.
 - **Source Timestamp vs Due Date Anchoring**: Preserves `sourceMessageTimestamp` and `sourceMessageDate` (when the message was posted) separate from the event date or submission deadline. Relative dates (*"next Tuesday"*, *"tomorrow"*) anchor strictly to the message arrival timestamp.
-- **Tampermonkey Floating Status Badge UX**: Unobtrusive bottom-left pill on WhatsApp Web with an interactive popover detailing live scan progress, processed items, ignored chatter, created/updated events, error reasons, and saved cursors.
+- **Tampermonkey Floating Status Badge UX (v3.2.1)**: Unobtrusive bottom-left pill on WhatsApp Web with an interactive popover detailing live scan progress, processed items, ignored chatter, created/updated events, error reasons, and saved cursors.
 - **Automated Reminders & Morning Briefing (Phase 4B)**: Server-side reminder engine evaluating upcoming exams, assignments, overdue tasks, and ambiguous deadlines with configurable intervals (7d, 3d, 1d, 3h, 1h) and daily 07:30 AM morning briefings.
 - **Interactive Reviewable Data Cleanup & Backfill Reset**: Admin tools in Dashboard allowing single-click backfill reset for any group, as well as a reviewable dry-run cleanup modal for purging spam or disallowed events.
 - **Deterministic Date Formatting**: Server and client rendering use deterministic formatting to ensure 100% hydration consistency between Next.js SSR and browser runtimes.
@@ -182,6 +186,49 @@ If historical messages need to be completely rescanned for a group:
 
 ---
 
+## WhatsApp Group & Announcement Detection Strategy
+
+WhatsApp Web does not expose an explicit boolean property distinguishing group chats from 1-to-1 conversations. Furthermore, WhatsApp Community announcement channels (`CSE-C Announcements`) have restricted interfaces where only admins may post, lacking ordinary participant lists and incoming message author headers.
+
+The Academic Command Center uses a deterministic 3-tier detection hierarchy with positive group evidence prioritization:
+
+```
+Active Chat Header & DOM Context
+            ↓
+[TIER 1] Positive Group & Announcement Evidence?
+  - Bottom composer notice: "Only admins can send messages"
+  - Header conversation action: "group info", "community info", "announcement", "channel"
+  - Header / Avatar icons: [data-icon*="group"], [data-icon="community"], [data-icon="announcement"]
+  - Subtitle indicators: "participants", "members", "community", comma-separated names
+  - Message bubble author headers
+  → YES: Classify as GROUP ✓
+            ↓ NO
+[TIER 2] Allowed Group Name Match?
+  - Normalized chat name exactly matches one of the 6 allowed academic groups
+  - Robust BiDi mark stripping (\u200E, \u200F) & Unicode dash normalization
+  → YES: Classify as GROUP ✓
+            ↓ NO
+[TIER 3] True Personal Chat Evidence?
+  - Header action: "contact info" (strictly excludes ambiguous "profile info")
+  - Status subtitle: "online", "last seen...", "typing...", "recording audio..."
+  - Contact avatar: "default-user"
+  → YES: Classify as PERSONAL (Ignored)
+            ↓ NO
+[DEFAULT] Fallback for unclassified 1-to-1 conversations → PERSONAL (Ignored)
+```
+
+### Conflict Resolution Rule: Positive Group Signals Always Win
+If positive group evidence or an allowed-group title match is present, it **strictly overrides** missing participant subtitles or weak indicators. For example:
+- `CSE-C Announcements` with *"Only admins can send messages"* and no participant list $\rightarrow$ **`GROUP`** (Monitored).
+- `Machine Learning CSE-C` with title match $\rightarrow$ **`GROUP`** (Monitored).
+- `Vignesh` with *"online"* status and no group signals $\rightarrow$ **`PERSONAL`** (Ignored).
+- `Weekend Friends Trip` (unallowed group) with group info button $\rightarrow$ **`GROUP_NOT_MONITORED`** (Ignored).
+
+### Unicode BiDi & Dash Normalization
+WhatsApp Web injects hidden directional formatting marks around title text (e.g. `\u200ECSE-C Announcements\u200E`) and may render dashes as Unicode en-dashes (`\u2013`) or spaced hyphens (`CSE - C`). `normalizeGroupName()` strips all invisible characters (`[\u200E\u200F\u200B-\u200D\u202A-\u202E\u2060\uFEFF]`), maps Unicode dashes to ASCII `-`, and collapses spaces around hyphens to ensure 100% reliable matching.
+
+---
+
 ## Automated Reminders & Morning Briefing (Phase 4B)
 
 Phase 4B provides a deterministic, server-side notification engine that reads authoritative academic events from Supabase and schedules alerts independently of the browser dashboard.
@@ -249,7 +296,19 @@ The test runner executes:
 3. **Multi-Event Extraction** (`src/lib/ai/multi-events.test.ts`): Splitting compound messages into multiple events.
 4. **Database & Notion Sync** (`src/lib/db/database-notion.test.ts`): Supabase CRUD, audit logs, and Notion mapping.
 5. **Collector Unit Tests** (`src/lib/collector/collector.test.ts`): Secret authentication, rate limits, and live reporting.
-6. **Group Filter & Relevance** (`src/lib/collector/group-filter.test.ts`): Allowlist enforcement, announcement channel heuristics, and personal chat preservation.
+6. **Group Filter & Relevance** (`src/lib/collector/group-filter.test.ts`):
+   - Strict 6-group allowlist enforcement & rejection of disallowed/embedded-project groups
+   - **Test 10A:** `CSE-C Announcements` with header & `"Only admins can send messages"` notice $\rightarrow$ `GROUP`
+   - **Test 10B:** `CSE-C Announcements` with missing participant subtitle $\rightarrow$ `GROUP`
+   - **Test 10C:** `CSE-C Announcements` without message author headers $\rightarrow$ `GROUP`
+   - **Test 10D:** Standard allowed group `Machine Learning CSE-C` $\rightarrow$ `GROUP`
+   - **Test 10E:** Genuine 1-to-1 personal chat `Vignesh` $\rightarrow$ `PERSONAL`
+   - **Requirement 9:** Personal chat preservation (online status, contact info, last seen, default-user icon)
+   - **Test 10F:** Unicode BiDi-wrapped `\u200ECSE-C Announcements\u200E` detection and canonicalization
+   - **Test 10G:** Ingestion of faculty exam timetable announcements in `CSE-C Announcements`
+   - **Test 10H:** Pure allowed group title match precedence (Tier 2)
+   - **Test 10I:** Unicode dash and spaced hyphen variants (`CSE – C Announcements`)
+   - **Test 10J:** Conflict resolution (positive announcement UI strictly wins over weak indicators)
 7. **Manual Scan Engine** (`src/lib/collector/manual-scan.test.ts`): Scanning lifecycle and badge state transitions.
 8. **Cursor Rescan Regression** (`src/lib/collector/cursor-rescan-regression.test.ts`): Verification that old messages are never rescanned from Sept 10.
 9. **Automated Reminders & Briefing** (`src/lib/reminders/reminders.test.ts`): 30+ reminder engine, briefing, and invalidation scenarios.
