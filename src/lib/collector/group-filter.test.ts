@@ -478,6 +478,38 @@ async function runGroupFilterTests() {
   assert.strictEqual(dataUnicode.success, true);
   console.log("✓ Test 10G passed: Announcement message in 'CSE-C Announcements' successfully ingested");
 
+  // Test 10H: CSE-C Announcements with ONLY title (no icons, no composer, no subtitle)
+  assert.strictEqual(
+    detectIsGroupChat({ chatName: "CSE-C Announcements" }),
+    true,
+    "10H: Pure allowed group name match must detect as GROUP (Tier 2)"
+  );
+  console.log("✓ Test 10H passed: Pure allowed title alone detects as GROUP (Tier 2)");
+
+  // Test 10I: Dash/hyphen and spacing variants
+  assert.strictEqual(
+    detectIsGroupChat({ chatName: "CSE – C Announcements" }),
+    true,
+    "10I: En-dash and spaced variant must detect as GROUP"
+  );
+  assert.strictEqual(
+    isGroupAllowed("CSE - C Announcements"),
+    true,
+    "Spaced hyphen variant must be allowed"
+  );
+  console.log("✓ Test 10I passed: En-dash and spaced allowed group names match");
+
+  // Test 10J: Conflict resolution - group evidence wins over weak personal evidence
+  assert.strictEqual(
+    detectIsGroupChat({
+      chatName: "CSE-C Announcements",
+      composerText: "Only admins can send messages"
+    }),
+    true,
+    "10J: Positive announcement UI must win"
+  );
+  console.log("✓ Test 10J passed: Group evidence strictly wins conflict resolution");
+
   console.log("\n============================================================");
   console.log("ALL GROUP FILTER & RELEVANCE TESTS PASSED CLEANLY! 🎉");
   console.log("============================================================\n");

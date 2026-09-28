@@ -252,8 +252,11 @@
       const footerEl = mainEl.querySelector("footer") || mainEl.querySelector("[data-testid='conversation-footer']");
       const footerText = footerEl ? (footerEl.textContent || "") : "";
       const isReadOnlyComposer =
-        /only (?:community )?admins can send messages/i.test(footerText) ||
-        /only (?:community )?admins can send messages/i.test(mainEl.textContent || "") ||
+        /only (?:community |group )?admins can send messages/i.test(footerText) ||
+        /only (?:community |group )?admins can send messages/i.test(mainEl.textContent || "") ||
+        /only admins can send/i.test(mainEl.textContent || "") ||
+        /messages can only be sent by admins/i.test(mainEl.textContent || "") ||
+        /you cannot send messages to this group/i.test(mainEl.textContent || "") ||
         Boolean(mainEl.querySelector("[data-testid*='read-only']")) ||
         Boolean(mainEl.querySelector("[data-testid*='announcement-banner']"));
 
@@ -275,6 +278,7 @@
             label.includes("group details") ||
             label.includes("community details") ||
             label.includes("announcement") ||
+            label.includes("announcements") ||
             label.includes("channel")
           ) {
             return true;
@@ -340,6 +344,7 @@
     // =========================================================================
     // TIER 3 — Personal-chat evidence
     // Only classify as PERSONAL when there is strong personal evidence
+    // Do NOT treat "profile info" as personal (groups also have profile info)!
     // =========================================================================
     // Contact info header
     for (const sel of SELECTORS.headerInfoButton) {
@@ -347,7 +352,7 @@
         const btn = mainEl.querySelector(sel);
         if (btn) {
           const label = (btn.getAttribute("aria-label") || btn.getAttribute("title") || "").toLowerCase();
-          if (label.includes("contact info") || label.includes("profile info")) {
+          if (label.includes("contact info")) {
             return false;
           }
         }
@@ -387,6 +392,8 @@
     if (!name || typeof name !== "string") return "";
     return cleanUnicode(name)
       .normalize("NFKC")
+      .replace(/[\u2010-\u2015\u2212]/g, "-")
+      .replace(/\s*-\s*/g, "-")
       .trim()
       .replace(/\s+/g, " ")
       .toLowerCase();
@@ -1191,7 +1198,9 @@
       return;
     }
 
-    const isGroup = isGroupChat(activeChat);
+    const norm = normalizeGroupName(activeChat);
+    const isAllowedTitle = CONFIG.allowedGroups.some(g => normalizeGroupName(g) === norm);
+    const isGroup = isAllowedTitle || isGroupChat(activeChat);
     const chatChanged = activeChat !== currentActiveChat || isGroup !== currentIsGroup;
 
     if (chatChanged) {
@@ -1200,8 +1209,7 @@
 
       log("Chat switched to:", activeChat, "Type:", isGroup ? "GROUP" : "PERSONAL");
 
-      const norm = normalizeGroupName(activeChat);
-      const isAllowed = isGroup && CONFIG.allowedGroups.some(g => normalizeGroupName(g) === norm);
+      const isAllowed = isGroup && isAllowedTitle;
 
       // Increment scanId to cancel any active scan from previous chat
       currentScanStats.scanId++;

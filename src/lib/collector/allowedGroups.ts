@@ -29,6 +29,8 @@ export function normalizeGroupName(name?: string | null): string {
   return name
     .replace(/[\u200E\u200F\u200B-\u200D\u202A-\u202E\u2060\uFEFF]/g, "")
     .normalize("NFKC")
+    .replace(/[\u2010-\u2015\u2212]/g, "-")
+    .replace(/\s*-\s*/g, "-")
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase();

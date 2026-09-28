@@ -28,14 +28,9 @@
  *   - Missing group evidence is NOT the same as evidence of a personal chat.
  */
 
-export const ALLOWED_ACADEMIC_GROUPS: readonly string[] = [
-  "Machine Learning CSE-C",
-  "Computer Networks CSE-C",
-  "TOC 23CSE303 - CSE-C",
-  "NLP 2026 batch",
-  "CSE-C Announcements",
-  "23CSE351 FoDS G1"
-];
+import { normalizeGroupName, ALLOWED_ACADEMIC_GROUPS } from "./allowedGroups";
+
+export { ALLOWED_ACADEMIC_GROUPS };
 
 export interface WhatsAppChatContext {
   chatName: string | null;
@@ -62,12 +57,7 @@ export function detectIsGroupChat(context: WhatsAppChatContext): boolean {
 
   if (!chatName) return false;
 
-  const nameNormalized = chatName
-    .replace(/[\u200E\u200F\u200B-\u200D\u202A-\u202E\u2060\uFEFF]/g, "")
-    .normalize("NFKC")
-    .trim()
-    .replace(/\s+/g, " ")
-    .toLowerCase();
+  const nameNormalized = normalizeGroupName(chatName);
   const subtitle = (subtitleText || "").toLowerCase().trim();
   const actionLabel = (headerActionLabel || "").toLowerCase().trim();
   const composer = (composerText || footerText || "").toLowerCase().trim();
@@ -77,24 +67,29 @@ export function detectIsGroupChat(context: WhatsAppChatContext): boolean {
   // TIER 1 — Strong Positive Group / Announcement Evidence
   // =========================================================================
 
-  // 1a: Header action label / conversation info button
+  // 1a: Announcement group UI ("Only admins can send messages")
+  // Priority: Announcement groups are restricted broadcast groups
+  const hasAdminOnlyComposer =
+    composer.includes("only admins can send messages") ||
+    composer.includes("only community admins can send messages") ||
+    composer.includes("only group admins can send messages") ||
+    composer.includes("admins only") ||
+    composer.includes("you cannot send messages to this group");
+
+  // 1b: Header action label / conversation info button
   const hasGroupActionLabel =
     actionLabel.includes("group info") ||
     actionLabel.includes("community info") ||
     actionLabel.includes("group details") ||
     actionLabel.includes("community details") ||
-    actionLabel.includes("announcement");
+    actionLabel.includes("announcement") ||
+    actionLabel.includes("announcements") ||
+    actionLabel.includes("channel");
 
-  // 1b: Header icons & avatars for group/community/announcement/channel
+  // 1c: Header icons & avatars for group/community/announcement/channel
   const hasGroupIcon = icons.some(
     i => i.includes("group") || i.includes("community") || i.includes("announcement") || i.includes("channel")
   );
-
-  // 1c: Announcement group UI ("Only admins can send messages")
-  const hasAdminOnlyComposer =
-    composer.includes("only admins can send messages") ||
-    composer.includes("only community admins can send messages") ||
-    composer.includes("admins only");
 
   // 1d: Subtitle group indicators & participant information
   const hasGroupSubtitle =
@@ -110,16 +105,17 @@ export function detectIsGroupChat(context: WhatsAppChatContext): boolean {
   // 1e: Message bubble author headers
   const hasAuthorHeaders = hasAuthorHeadersOnMessages === true;
 
-  if (hasGroupActionLabel || hasGroupIcon || hasAdminOnlyComposer || hasGroupSubtitle || hasAuthorHeaders) {
+  if (hasAdminOnlyComposer || hasGroupActionLabel || hasGroupIcon || hasGroupSubtitle || hasAuthorHeaders) {
     return true;
   }
 
   // =========================================================================
   // TIER 2 — Allowed-Group-Name Match
-  // If normalized title matches any configured allowed group, classify as GROUP
+  // If normalized current chat title EXACTLY matches one of the 6 allowed groups:
+  // → classify as GROUP.
   // =========================================================================
   const isAllowedGroupTitle = allowedGroups.some(
-    g => g.toLowerCase().replace(/\s+/g, " ").trim() === nameNormalized
+    g => normalizeGroupName(g) === nameNormalized
   );
 
   if (isAllowedGroupTitle) {
@@ -129,9 +125,10 @@ export function detectIsGroupChat(context: WhatsAppChatContext): boolean {
   // =========================================================================
   // TIER 3 — Personal-Chat Evidence
   // Only classify as PERSONAL when there is strong personal evidence
+  // Do NOT treat "profile info" as personal (groups also have profile info)!
   // =========================================================================
   const hasPersonalActionLabel =
-    actionLabel.includes("contact info") || actionLabel.includes("profile info");
+    actionLabel.includes("contact info");
 
   const hasPersonalStatusSubtitle =
     subtitle === "online" ||
@@ -140,7 +137,7 @@ export function detectIsGroupChat(context: WhatsAppChatContext): boolean {
     subtitle === "recording audio...";
 
   const hasPersonalIcon = icons.some(
-    i => i === "default-user" || i.includes("user") || i.includes("contact")
+    i => i === "default-user" || i === "avatar-user" || i.includes("default-user")
   );
 
   if (hasPersonalActionLabel || hasPersonalStatusSubtitle || hasPersonalIcon) {
