@@ -27,6 +27,7 @@ export const ALLOWED_ACADEMIC_GROUPS: readonly string[] = [
 export function normalizeGroupName(name?: string | null): string {
   if (!name || typeof name !== "string") return "";
   return name
+    .replace(/[\u200E\u200F\u200B-\u200D\u202A-\u202E\u2060\uFEFF]/g, "")
     .normalize("NFKC")
     .trim()
     .replace(/\s+/g, " ")

@@ -62,7 +62,12 @@ export function detectIsGroupChat(context: WhatsAppChatContext): boolean {
 
   if (!chatName) return false;
 
-  const nameNormalized = chatName.toLowerCase().replace(/\s+/g, " ").trim();
+  const nameNormalized = chatName
+    .replace(/[\u200E\u200F\u200B-\u200D\u202A-\u202E\u2060\uFEFF]/g, "")
+    .normalize("NFKC")
+    .trim()
+    .replace(/\s+/g, " ")
+    .toLowerCase();
   const subtitle = (subtitleText || "").toLowerCase().trim();
   const actionLabel = (headerActionLabel || "").toLowerCase().trim();
   const composer = (composerText || footerText || "").toLowerCase().trim();

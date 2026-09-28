@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Academic Command Center - WhatsApp Web Collector
 // @namespace    http://academic-command-center.local/
-// @version      3.2.0
+// @version      3.2.1
 // @description  Small floating ACC Collector status pill at bottom-left of WhatsApp Web with explicit scan lifecycle UX, auto-hide, popover summary, and cursor safety.
 // @author       Academic Command Center
 // @match        https://web.whatsapp.com/*
@@ -80,9 +80,14 @@
     }
   }
 
+  function cleanUnicode(str) {
+    if (!str || typeof str !== "string") return "";
+    return str.replace(/[\u200E\u200F\u200B-\u200D\u202A-\u202E\u2060\uFEFF]/g, "");
+  }
+
   function hashSimple(str) {
     let hash = 0;
-    const clean = str.trim().toLowerCase().replace(/\s+/g, " ");
+    const clean = cleanUnicode(str).trim().toLowerCase().replace(/\s+/g, " ");
     for (let i = 0; i < clean.length; i++) {
       const char = clean.charCodeAt(i);
       hash = (hash << 5) - hash + char;
@@ -198,14 +203,32 @@
   }
 
   function getActiveChatName() {
-    const mainEl = document.getElementById("main") || document;
+    const headerEl = document.querySelector("#main header") || document.querySelector("header");
+    if (!headerEl) return null;
+
+    // 1. Scan candidate title elements in header to see if any match an allowed group
+    const candidateElements = headerEl.querySelectorAll("span[dir='auto'][title], [role='heading'], span[title], span._ao3e, span[dir='auto']");
+    for (const el of candidateElements) {
+      const raw = el.getAttribute("title") || el.textContent || "";
+      const cleaned = cleanUnicode(raw).trim();
+      if (cleaned) {
+        const norm = normalizeGroupName(cleaned);
+        const matchedAllowed = CONFIG.allowedGroups.find(g => normalizeGroupName(g) === norm);
+        if (matchedAllowed) {
+          return matchedAllowed;
+        }
+      }
+    }
+
+    // 2. Fall back to primary selector order
     for (const sel of SELECTORS.chatTitle) {
       try {
-        const el = mainEl.querySelector(sel);
+        const el = headerEl.querySelector(sel);
         if (el) {
           const title = el.getAttribute("title") || el.textContent;
-          if (title && title.trim().length > 0) {
-            return title.trim();
+          const cleaned = cleanUnicode(title).trim();
+          if (cleaned.length > 0) {
+            return cleaned;
           }
         }
       } catch (_) {}
@@ -362,11 +385,17 @@
 
   function normalizeGroupName(name) {
     if (!name || typeof name !== "string") return "";
-    return name
+    return cleanUnicode(name)
       .normalize("NFKC")
       .trim()
       .replace(/\s+/g, " ")
       .toLowerCase();
+  }
+
+  function getCanonicalGroupName(name) {
+    if (!name) return "";
+    const norm = normalizeGroupName(name);
+    return CONFIG.allowedGroups.find(g => normalizeGroupName(g) === norm) || cleanUnicode(name).trim();
   }
 
   function isGroupMonitored(chatName) {
@@ -500,12 +529,42 @@
   function extractMessageDetails(msgNode) {
     try {
       let text = "";
-      const textEl = queryFirst(msgNode, SELECTORS.messageText);
-      if (textEl) {
-        text = textEl.innerText || textEl.textContent || "";
+      for (const sel of SELECTORS.messageText) {
+        try {
+          const el = msgNode.querySelector(sel);
+          if (el) {
+            const t = el.innerText || el.textContent || "";
+            if (t && cleanUnicode(t).trim().length > 0) {
+              text = cleanUnicode(t).trim();
+              break;
+            }
+          }
+        } catch (_) {}
       }
 
-      if (!text.trim()) {
+      if (!text) {
+        const copyable = msgNode.querySelector("div.copyable-text");
+        if (copyable) {
+          const t = copyable.innerText || copyable.textContent || "";
+          if (t && cleanUnicode(t).trim().length > 0) {
+            text = cleanUnicode(t).trim();
+          }
+        }
+      }
+
+      if (!text) {
+        const spans = msgNode.querySelectorAll("span[dir='ltr'], span[dir='auto']");
+        for (const s of spans) {
+          if (s.matches?.("[data-testid='msg-time'], [data-testid='msg-meta'] span, time")) continue;
+          const st = cleanUnicode(s.innerText || s.textContent || "").trim();
+          if (st.length > 2 && !/^\d{1,2}:\d{2}(?:\s*(?:am|pm))?$/i.test(st)) {
+            text = st;
+            break;
+          }
+        }
+      }
+
+      if (!text) {
         return null;
       }
 
@@ -523,7 +582,7 @@
           timestamp = parseWhatsAppMessageTimestamp(prePlainText);
           const match = prePlainText.match(/\[(.*?)\s*,\s*(.*?)\]\s*(.*?):\s*$/);
           if (match) {
-            sender = match[3]?.trim();
+            sender = cleanUnicode(match[3]?.trim());
           }
         }
       }
@@ -531,13 +590,23 @@
       if (!sender) {
         const authorEl = queryFirst(msgNode, SELECTORS.authorHeaders);
         if (authorEl) {
-          sender = authorEl.textContent?.trim() || null;
+          sender = cleanUnicode(authorEl.textContent?.trim() || "");
+        }
+      }
+
+      if (!timestamp) {
+        const timeEl = msgNode.querySelector("[data-testid='msg-time'], time, span._aau4");
+        if (timeEl) {
+          const timeText = timeEl.textContent?.trim();
+          if (timeText) {
+            timestamp = parseWhatsAppMessageTimestamp(timeText);
+          }
         }
       }
 
       return {
         id: dataId,
-        text: text.trim(),
+        text,
         sender: sender || undefined,
         timestamp: timestamp || new Date().toISOString()
       };
@@ -554,7 +623,11 @@
     "assessment", "test", "scheduled", "postponed", "cancelled", "canceled",
     "rescheduled", "extended", "submission link", "classroom.google.com",
     "forms.gle", "moodle", "drive.google.com", "hall ticket", "syllabus",
-    "fods", "data science"
+    "fods", "data science", "announcement", "announcements", "notice", "circular",
+    "schedule", "timetable", "time table", "class", "classes", "lecture",
+    "lectures", "session", "sessions", "tutorial", "workshop", "webinar",
+    "holiday", "mid term", "mid-term", "midterm", "mid sem", "mid-sem",
+    "midsem", "hall", "room", "faculty", "hod", "coordinator", "cse", "toc", "nlp", "cn"
   ];
 
   const PROMOTIONAL_INDICATORS = [
@@ -585,8 +658,8 @@
     "cool", "lol", "lmao", "done", "noted", "+1", "👍", "👌", "🙏", "😂", "❤️", "🎉"
   ]);
 
-  function passesLocalFilter(text) {
-    const clean = text.trim();
+  function passesLocalFilter(text, groupName = "") {
+    const clean = cleanUnicode(text).trim();
     const lower = clean.toLowerCase();
 
     if (CLEAR_CHATTER_EXACT.has(lower)) return false;
@@ -597,11 +670,21 @@
     const isPromo = PROMOTIONAL_INDICATORS.some(pat => pat.test(clean));
     if (isPromo) return false;
 
+    // Announcement channel pass-through: In channels like "CSE-C Announcements",
+    // broadcasts sent by faculty/admins are legitimate academic announcements.
+    const isAnnouncementChannel = /announcement/i.test(groupName);
+    if (isAnnouncementChannel) {
+      const isPureAttendance = ATTENDANCE_ONLY_PATTERNS.some(pat => pat.test(clean)) &&
+        !/\b(assignment\d*|submit|deadline|due|exam|slip\s*test|quiz|lab|project|presentation|test|class|schedule|tomorrow|today|monday|tuesday|wednesday|thursday|friday|saturday)\b/i.test(clean);
+      if (isPureAttendance) return false;
+      return /[a-zA-Z]{3,}/.test(clean);
+    }
+
     const hasAcademicSignal = STRICT_ACADEMIC_KEYWORDS.some(kw => lower.includes(kw));
 
     const isAttendance = ATTENDANCE_ONLY_PATTERNS.some(pat => pat.test(clean));
     if (isAttendance) {
-      const hasRealAcademicEvent = /\b(assignment\d*|submit|deadline|due|exam|slip\s*test|quiz|lab|project|presentation|test)\b/i.test(clean);
+      const hasRealAcademicEvent = /\b(assignment\d*|submit|deadline|due|exam|slip\s*test|quiz|lab|project|presentation|test|class|lecture)\b/i.test(clean);
       if (!hasRealAcademicEvent) return false;
     }
 
@@ -658,6 +741,9 @@
 
   async function reportCollectorStatus(payload) {
     try {
+      if (payload && payload.currentGroup) {
+        payload.currentGroup = getCanonicalGroupName(payload.currentGroup);
+      }
       await apiRequest("POST", "/api/collector/status", payload);
     } catch (err) {
       log("Error reporting collector status:", err.message);
@@ -666,7 +752,8 @@
 
   async function fetchGroupState(groupName) {
     try {
-      const res = await apiRequest("GET", `/api/collector/groups/${encodeURIComponent(groupName)}`);
+      const canonical = getCanonicalGroupName(groupName);
+      const res = await apiRequest("GET", `/api/collector/groups/${encodeURIComponent(canonical)}`);
       return res.data?.group || null;
     } catch (_) {
       return null;
@@ -675,7 +762,9 @@
 
   async function updateGroupCursor(groupName, updates) {
     try {
-      const res = await apiRequest("PATCH", `/api/collector/groups/${encodeURIComponent(groupName)}/cursor`, updates);
+      const canonical = getCanonicalGroupName(groupName);
+      if (updates && updates.groupName) updates.groupName = canonical;
+      const res = await apiRequest("PATCH", `/api/collector/groups/${encodeURIComponent(canonical)}/cursor`, updates);
       return res.data?.group || null;
     } catch (err) {
       log("Failed to update group cursor:", err.message);
@@ -684,6 +773,9 @@
   }
 
   async function sendAcademicMessage(payload) {
+    if (payload && payload.sourceGroup) {
+      payload.sourceGroup = getCanonicalGroupName(payload.sourceGroup);
+    }
     return await apiRequest("POST", "/api/collector/messages", payload);
   }
 
@@ -711,17 +803,21 @@
     const mainEl = document.getElementById("main");
     if (!mainEl) return [];
 
-    const nodes = [];
+    let nodes = [];
     for (const sel of SELECTORS.messageContainers) {
       const found = mainEl.querySelectorAll(sel);
       if (found && found.length > 0) {
+        const candidateNodes = [];
         found.forEach(n => {
           const details = extractMessageDetails(n);
           if (details && details.text) {
-            nodes.push(details);
+            candidateNodes.push(details);
           }
         });
-        break;
+        if (candidateNodes.length > 0) {
+          nodes = candidateNodes;
+          break;
+        }
       }
     }
 
@@ -893,7 +989,7 @@
       markAsProcessed(msg.id, msg.text);
 
       // Local relevance filter (chatter, attendance-only, advertisements)
-      if (!passesLocalFilter(msg.text)) {
+      if (!passesLocalFilter(msg.text, groupName)) {
         currentScanStats.messagesIgnored++;
         // Ignored messages advance the scan cursor
         newestScannedTimestamp = msg.timestamp;
@@ -1184,7 +1280,7 @@
                 markAsProcessed(details.id, details.text);
                 currentScanStats.messagesScanned++;
 
-                if (!passesLocalFilter(details.text)) {
+                if (!passesLocalFilter(details.text, currentActiveChat)) {
                   currentScanStats.messagesIgnored++;
                   currentScanStats.lastProcessedTimestamp = details.timestamp;
                   updateStatusBadge();

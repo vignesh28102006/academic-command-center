@@ -455,6 +455,29 @@ async function runGroupFilterTests() {
   );
   console.log("✓ Requirement 9 passed: Genuine 1-to-1 personal chats strictly preserved as PERSONAL");
 
+  // --- Requirement 11: Unicode mark resilience & Announcement ingestion ---
+  const unicodeAnnouncements = "\u200ECSE-C Announcements\u200E";
+  assert.strictEqual(isGroupAllowed(unicodeAnnouncements), true, "Unicode-wrapped 'CSE-C Announcements' must be allowed");
+  assert.strictEqual(getCanonicalGroupName(unicodeAnnouncements), "CSE-C Announcements", "Must canonicalize to clean name");
+  assert.strictEqual(
+    detectIsGroupChat({ chatName: unicodeAnnouncements }),
+    true,
+    "Unicode-wrapped allowed group must be detected as GROUP"
+  );
+  console.log("✓ Test 10F passed: Unicode-wrapped 'CSE-C Announcements' detected as GROUP and allowed");
+
+  const reqUnicode = makeRequest({
+    message: "Announcement: Mid-term exam timetable has been released for CSE-C. Exams commence from 15th October.",
+    sourceGroup: unicodeAnnouncements,
+    sourceSender: "HOD",
+    messageTimestamp: "2026-10-02T10:00:00Z"
+  });
+  const resUnicode = await handleCollectorMessage(reqUnicode);
+  assert.strictEqual(resUnicode.status, 201, "Announcement message in unicode group must be ingested with 201");
+  const dataUnicode = await resUnicode.json();
+  assert.strictEqual(dataUnicode.success, true);
+  console.log("✓ Test 10G passed: Announcement message in 'CSE-C Announcements' successfully ingested");
+
   console.log("\n============================================================");
   console.log("ALL GROUP FILTER & RELEVANCE TESTS PASSED CLEANLY! 🎉");
   console.log("============================================================\n");

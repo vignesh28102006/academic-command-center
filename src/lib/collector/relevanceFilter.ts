@@ -53,7 +53,15 @@ const ACADEMIC_EVENT_SIGNALS = [
   /\b(presentation|seminar|slides|ppt)\b/i,
   /\b(certification|course|assessment|test)\b/i,
   /\b(postponed|rescheduled|extended|scheduled|cancelled|canceled)\b/i,
-  /\b(forms\.gle|classroom\.google\.com|moodle|submission\s*link)\b/i
+  /\b(forms\.gle|classroom\.google\.com|moodle|submission\s*link)\b/i,
+  /\b(announcement|announcements|notice|circular)\b/i,
+  /\b(schedule|schedules|timetable|time\s*table)\b/i,
+  /\b(mid\s*sem|midsem)\b/i,
+  /\b(lecture|lectures|tutorial|tutorials|class|classes|session|sessions)\b/i,
+  /\b(workshop|webinar|conference|symposium)\b/i,
+  /\b(syllabus|curriculum|module\d*|unit\d*)\b/i,
+  /\b(hall\s*ticket|hall\s*\d+|room\s*\d+|audi\s*\d+)\b/i,
+  /\b(toc|nlp|ml|cn|fods|cse[- ]?c|cse)\b/i
 ];
 
 // Promotional / Advertisement indicators
@@ -194,7 +202,7 @@ export function classifyAcademicMessage(text: string): RelevanceFilterResult {
 
   // 6. Strong Academic Event Signals (assignments, exams, tests, quizzes, projects)
   if (hasAcademic) {
-    const isEvent = /\b(due|deadline|tomorrow|today|on\s+[a-z]+|at\s+\d+|scheduled|conducted|submit\b|exam|test|quiz|lab)\b/i.test(trimmed);
+    const isEvent = /\b(due|deadline|tomorrow|today|on\s+[a-z]+|at\s+\d+|scheduled|conducted|submit\b|exam|test|quiz|lab|class|session|lecture|workshop|tutorial)\b/i.test(trimmed);
     if (isEvent) {
       return {
         category: "ACADEMIC_EVENT",
